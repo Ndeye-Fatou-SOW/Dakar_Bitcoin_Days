@@ -32,6 +32,14 @@ Pour lancer le backend, suis le README à la racine du dépôt. La documentation
 - Le QR code se fabrique à partir du champ `payment_request` de la facture.
 - `GET /tontines/{id}` renvoie un champ `situation` avec, pour chaque membre : `nom`, `statut`, `en_defaut` et `montant_du_fcfa`. C'est ce qu'il faut afficher dans la liste.
 
+## Temps réel
+
+Dans `backend/app/main.py`, `moteur.abonner(ta_fonction)` appelle ta fonction à chaque événement : c'est là que tu peux envoyer le message WebSocket. La fonction tourne dans un fil séparé, hors de la boucle `asyncio` de FastAPI.
+
+Types d'événements : `membre_inscrit`, `ordre_fixe`, `nouveau_tour`, `membre_en_defaut`, `cotisation_payee`, `membre_exclu`, `versement_fait`, `versement_echec`, `tontine_terminee`.
+
+Après une coupure, l'écran récupère ce qu'il a manqué avec `GET /tontines/{id}/evenements?depuis=<dernier numero reçu>`.
+
 ## À décider avec Fatou
 
 La détection des retards et le calcul des amendes sont déjà dans le moteur. Il reste à se mettre d'accord sur le partage : par exemple, les rappels et l'affichage de ton côté.

@@ -1,6 +1,8 @@
 """Logique de la tontine : creation, inscription, ordre de passage, tours, retards, versement."""
 
 import hashlib
+import logging
+import queue
 import random
 import secrets
 import threading
@@ -12,6 +14,7 @@ from .conversion import fcfa_vers_sats
 from .lightning import Lightning, preimage_valide
 
 SECONDES_PAR_JOUR = 86_400
+journal = logging.getLogger(__name__)
 
 
 class ErreurTontine(Exception):
@@ -78,6 +81,17 @@ class Tour:
 
 
 @dataclass
+class Evenement:
+    """Ce qui vient de se passer. Jamais de nom ni d'adresse : seulement des identifiants."""
+    tontine_id: str
+    numero: int      # 1, 2, 3... dans chaque tontine, pour reprendre apres une coupure
+    type: str
+    date: float
+    tour: int | None
+    donnees: dict
+
+
+@dataclass
 class Tontine:
     id: str
     nom: str
@@ -94,6 +108,7 @@ class Tontine:
     graine_tirage: str | None = None   # publiee pour que chacun puisse refaire le tirage
     tours: list[Tour] = field(default_factory=list)
     statut: Statut = Statut.INSCRIPTION
+    evenements: list[Evenement] = field(default_factory=list)
 
     def membre(self, membre_id: str) -> Membre:
         for m in self.membres:
@@ -124,6 +139,10 @@ class Moteur:
         self.tontines: dict[str, Tontine] = {}
         self._factures: dict[str, tuple[str, int, str]] = {}  # hash -> (tontine, tour, membre)
         self._verrou = threading.RLock()
+        self._abonnes = []
+        self._a_diffuser: list[Evenement] = []
+        self._file: queue.Queue[Evenement] = queue.Queue()
+        self._diffuseur: threading.Thread | None = None
         if stockage is not None:
             for t in stockage.charger():
                 self.tontines[t.id] = t
@@ -135,6 +154,45 @@ class Moteur:
     def _sauver(self, t: Tontine):
         if self.stockage is not None:
             self.stockage.sauver(t)
+        # Les signaux ne partent qu'une fois l'evenement enregistre.
+        if self._abonnes:
+            for e in self._a_diffuser:
+                self._file.put(e)
+        self._a_diffuser.clear()
+
+    # --- Signaux ---
+
+    def abonner(self, fonction):
+        """Appelle fonction(evenement) a chaque evenement, sans ralentir les paiements."""
+        with self._verrou:
+            self._abonnes.append(fonction)
+            if self._diffuseur is None:
+                self._diffuseur = threading.Thread(target=self._diffuser, daemon=True)
+                self._diffuseur.start()
+
+    def attendre_diffusion(self):
+        """Attend que tous les signaux en attente soient partis."""
+        self._file.join()
+
+    def evenements(self, tontine_id: str, depuis: int = 0) -> list[Evenement]:
+        """Journal de la tontine : les evenements dont le numero est superieur a depuis."""
+        with self._verrou:
+            return [e for e in self.tontine(tontine_id).evenements if e.numero > depuis]
+
+    def _emettre(self, t: Tontine, type_evenement: str, tour: int | None = None, **donnees):
+        e = Evenement(t.id, len(t.evenements) + 1, type_evenement, self.horloge(), tour, donnees)
+        t.evenements.append(e)
+        self._a_diffuser.append(e)
+
+    def _diffuser(self):
+        while True:
+            e = self._file.get()
+            for fonction in list(self._abonnes):
+                try:
+                    fonction(e)
+                except Exception:   # un abonne en panne ne doit pas bloquer les autres
+                    journal.exception("Echec de l'abonne pour l'evenement %s", e.type)
+            self._file.task_done()
 
     # --- Creation et inscription ---
 
@@ -184,6 +242,7 @@ class Moteur:
                 raise ErreurTontine("La tontine est complete")
             m = Membre(secrets.token_hex(8), nom, adresse_lightning)
             t.membres.append(m)
+            self._emettre(t, "membre_inscrit", membre_id=m.id)
             self._sauver(t)
             return t, m
 
@@ -205,6 +264,7 @@ class Moteur:
             if sorted(ordre) != sorted(m.id for m in t.membres):
                 raise ErreurTontine("L'ordre doit contenir chaque membre une seule fois")
             t.ordre, t.graine_tirage = list(ordre), None
+            self._emettre(t, "ordre_fixe", ordre=t.ordre, graine_tirage=None)
             self._sauver(t)
             return t
 
@@ -214,6 +274,7 @@ class Moteur:
             self._verifier_inscription(t, jeton)
             t.graine_tirage = secrets.token_hex(16)
             t.ordre = tirer_ordre([m.id for m in t.membres], t.graine_tirage)
+            self._emettre(t, "ordre_fixe", ordre=t.ordre, graine_tirage=t.graine_tirage)
             self._sauver(t)
             return t
 
@@ -238,6 +299,8 @@ class Moteur:
         t.tours.append(Tour(numero=numero, beneficiaire_id=t.ordre[numero - 1],
                             date_limite=self.horloge() + t.delai_jours * SECONDES_PAR_JOUR,
                             cotisations={m.id: Cotisation(m.id) for m in actifs}))
+        self._emettre(t, "nouveau_tour", numero, beneficiaire_id=t.ordre[numero - 1],
+                      date_limite=t.tours[-1].date_limite)
 
     def _actualiser_retards(self, t: Tontine):
         """Apres la date limite, marque les retards et ajoute l'amende au prochain montant du."""
@@ -248,6 +311,8 @@ class Moteur:
             if c.statut == StatutCotisation.EN_ATTENTE and not c.en_retard:
                 c.en_retard = True
                 t.membre(c.membre_id).amendes_dues_fcfa += t.amende_fcfa
+                self._emettre(t, "membre_en_defaut", t.tour_actuel.numero,
+                              membre_id=c.membre_id, amende_fcfa=t.amende_fcfa)
                 change = True
         if change:
             self._sauver(t)
@@ -308,6 +373,8 @@ class Moteur:
             c.statut, c.preimage = StatutCotisation.PAYE, preimage
             m = t.membre(membre_id)
             m.amendes_dues_fcfa = max(0, m.amendes_dues_fcfa - c.amende_fcfa)
+            self._emettre(t, "cotisation_payee", numero, membre_id=membre_id,
+                          montant_sats=c.montant_sats, payment_hash=payment_hash, preimage=preimage)
             self._sauver(t)
             if tour.complet and tour.versement_statut == StatutVersement.AUCUN:
                 self._verser(t)
@@ -334,6 +401,7 @@ class Moteur:
             del tour.cotisations[membre_id]
             if c.payment_hash:
                 self._factures.pop(c.payment_hash, None)
+            self._emettre(t, "membre_exclu", tour.numero, membre_id=membre_id)
             self._sauver(t)
             if tour.complet and tour.versement_statut == StatutVersement.AUCUN:
                 self._verser(t)
@@ -361,12 +429,17 @@ class Moteur:
                 beneficiaire.adresse_lightning, total, f"{t.nom} - cagnotte du tour {tour.numero}")
         except Exception:
             tour.versement_statut = StatutVersement.ECHEC
+            self._emettre(t, "versement_echec", tour.numero,
+                          beneficiaire_id=beneficiaire.id, montant_sats=total)
             self._sauver(t)
             return
         tour.versement_preimage, tour.versement_sats = preimage, total
         tour.versement_statut = StatutVersement.FAIT
+        self._emettre(t, "versement_fait", tour.numero, beneficiaire_id=beneficiaire.id,
+                      montant_sats=total, preimage=preimage)
         if tour.numero == len(t.ordre):
             t.statut = Statut.TERMINEE
+            self._emettre(t, "tontine_terminee", tour.numero)
         else:
             self._nouveau_tour(t)
         self._sauver(t)

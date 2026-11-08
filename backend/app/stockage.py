@@ -4,7 +4,7 @@ import json
 import sqlite3
 from dataclasses import asdict
 
-from .tontine import (Cotisation, Membre, Statut, StatutCotisation, StatutMembre,
+from .tontine import (Cotisation, Evenement, Membre, Statut, StatutCotisation, StatutMembre,
                       StatutVersement, Tontine, Tour)
 
 
@@ -16,7 +16,9 @@ def tontine_depuis_dict(d: dict) -> Tontine:
                        for cle, c in tour["cotisations"].items()}
         tours.append(Tour(**{**tour, "cotisations": cotisations,
                              "versement_statut": StatutVersement(tour["versement_statut"])}))
-    return Tontine(**{**d, "membres": membres, "tours": tours, "statut": Statut(d["statut"])})
+    evenements = [Evenement(**e) for e in d.get("evenements", [])]
+    return Tontine(**{**d, "membres": membres, "tours": tours, "statut": Statut(d["statut"]),
+                      "evenements": evenements})
 
 
 class Stockage:

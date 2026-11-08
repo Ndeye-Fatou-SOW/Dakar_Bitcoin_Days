@@ -27,6 +27,16 @@ Ce dossier contient le registre sur Nostr et l'historique des tours. Tu t'occupe
 
 Le registre public ne doit contenir **ni nom ni numéro de téléphone**. Pour identifier un membre, utilise la fonction `empreinte_anonyme(membre_id, sel)` de `backend/app/tontine.py`. Le `sel` doit rester secret : il ne doit jamais être envoyé sur le dépôt.
 
-## À décider avec Fatou
+## Publier une preuve à chaque événement
 
-Le moteur ne publie encore rien sur Nostr. Il reste à choisir comment le prévenir de publier une preuve après chaque paiement et chaque versement.
+Le moteur signale ce qui se passe. Pour recevoir ces signaux, branche ta fonction dans `backend/app/main.py` :
+
+```python
+moteur.abonner(publier_sur_nostr)   # appelée avec chaque événement
+```
+
+Pour le registre, les événements utiles sont `cotisation_payee` et `versement_fait`. Ils contiennent `preimage` et `montant_sats` dans `evenement.donnees`, et `cotisation_payee` contient aussi `payment_hash`.
+
+Les événements contiennent le `membre_id`, qu'il faut passer dans `empreinte_anonyme` avant de publier.
+
+Si Nostr est injoignable, le signal n'est pas renvoyé. Garde le dernier `numero` publié et récupère la suite avec `GET /tontines/{id}/evenements?depuis=<numero>`.

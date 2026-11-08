@@ -175,6 +175,76 @@ def test_reprise_apres_redemarrage(tmp_path):
     assert t2.statut == Statut.EN_COURS
 
 
+def test_journal_d_un_tour_sans_donnees_personnelles():
+    moteur, ln, t = preparer()
+    payer_tous(moteur, ln, t)
+    assert [e.type for e in moteur.evenements(t.id)] == [
+        "membre_inscrit", "membre_inscrit", "ordre_fixe", "nouveau_tour",
+        "cotisation_payee", "cotisation_payee", "cotisation_payee",
+        "versement_fait", "nouveau_tour"]
+    assert [e.numero for e in moteur.evenements(t.id)] == list(range(1, 10))
+    assert [e.numero for e in moteur.evenements(t.id, depuis=8)] == [9]
+    texte = str(moteur.evenements(t.id))
+    assert "Membre0" not in texte and "Awa" not in texte and "@wallet" not in texte
+
+
+def test_signaux_recus_malgre_un_abonne_en_panne():
+    moteur, ln, t = preparer()
+    recus = []
+
+    def abonne_en_panne(evenement):
+        raise RuntimeError("relai Nostr injoignable")
+
+    moteur.abonner(abonne_en_panne)
+    moteur.abonner(lambda evenement: recus.append(evenement.type))
+    payer_tous(moteur, ln, t)
+    moteur.attendre_diffusion()
+    assert recus == ["cotisation_payee"] * 3 + ["versement_fait", "nouveau_tour"]
+    assert t.tours[0].versement_statut == StatutVersement.FAIT
+
+
+def test_signal_de_fin_et_d_echec():
+    moteur, ln, t = preparer(nombre=2)
+
+    def panne(*args):
+        raise RuntimeError("noeud injoignable")
+
+    payer_normal, ln.payer = ln.payer, panne
+    payer_tous(moteur, ln, t)
+    assert moteur.evenements(t.id)[-1].type == "versement_echec"
+    ln.payer = payer_normal
+    moteur.relancer_versement(t.id, t.jeton_organisateur)
+    payer_tous(moteur, ln, t)
+    assert moteur.evenements(t.id)[-1].type == "tontine_terminee"
+
+
+def test_journal_conserve_apres_redemarrage(tmp_path):
+    chemin = str(tmp_path / "test.db")
+    moteur, ln, t = preparer(stockage=Stockage(chemin))
+    payer(moteur, ln, t, t.membres[0].id)
+    nombre = len(moteur.evenements(t.id))
+
+    relance = Moteur(ln, CoursFixe(100_000), stockage=Stockage(chemin))
+    assert len(relance.evenements(t.id)) == nombre
+    payer(relance, ln, relance.tontine(t.id), t.membres[1].id)
+    assert relance.evenements(t.id)[-1].numero == nombre + 1
+
+
+def test_api_evenements():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    r = client.post("/tontines", json={"nom": "T", "montant_fcfa": 1000, "nombre_membres": 2,
+                                       "nom_organisateur": "Awa", "adresse_lightning": "a@w"}).json()
+    tid = r["tontine"]["id"]
+    assert "evenements" not in r["tontine"]
+    client.post(r["lien_invitation"], json={"nom": "Ibou", "adresse_lightning": "i@w"})
+    journal = client.get(f"/tontines/{tid}/evenements").json()
+    assert [e["type"] for e in journal] == ["membre_inscrit"]
+    assert client.get(f"/tontines/{tid}/evenements", params={"depuis": 1}).json() == []
+
+
 def test_api_ne_montre_pas_le_jeton():
     from fastapi.testclient import TestClient
     from app.main import app

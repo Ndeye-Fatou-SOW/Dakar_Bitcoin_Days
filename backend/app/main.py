@@ -52,6 +52,7 @@ class Confirmation(BaseModel):
 def vue(t: Tontine) -> dict:
     donnees = asdict(t)
     del donnees["jeton_organisateur"]   # ce secret ne doit jamais etre visible des membres
+    del donnees["evenements"]           # disponibles sur /tontines/{id}/evenements
     donnees["situation"] = moteur.situation(t)
     return donnees
 
@@ -77,6 +78,11 @@ def creer(d: NouvelleTontine):
 @app.get("/tontines/{tontine_id}")
 def lire(tontine_id: str):
     return vue(executer(lambda: moteur.etat(tontine_id)))
+
+
+@app.get("/tontines/{tontine_id}/evenements")
+def evenements(tontine_id: str, depuis: int = Query(default=0, ge=0)):
+    return [asdict(e) for e in executer(lambda: moteur.evenements(tontine_id, depuis))]
 
 
 @app.post("/rejoindre/{code}")
