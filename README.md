@@ -36,12 +36,17 @@ python -m uvicorn app.main:app --reload
 
 La documentation de l'API s'ouvre ensuite sur http://127.0.0.1:8000/docs
 
-## Brancher Lightning (pour Alassane)
+Par défaut, le backend utilise un faux Lightning : pas besoin de Docker pour travailler sur le reste.
 
-Le moteur passe par l'interface `Lightning` de [backend/app/lightning.py](backend/app/lightning.py), qui contient deux méthodes :
+## Lancer le backend avec le vrai Lightning
 
-- `creer_facture(montant_sats, description)` renvoie la facture BOLT11 et son `payment_hash`.
-- `payer(adresse_lightning, montant_sats, description)` renvoie la preimage du versement.
+Il faut d'abord démarrer le réseau de test (voir [lightning/README.md](lightning/README.md)), puis, sous Windows PowerShell :
 
-Quand LNbits reçoit un paiement, il doit appeler `POST /paiements/confirmation` avec le `payment_hash` et la `preimage`.
-Pour l'instant, le backend utilise un faux service (`LightningFactice`) : il suffit de le remplacer dans `backend/app/main.py`.
+```
+cd backend
+python -m pip install -r requirements-lightning.txt
+$env:LIGHTNING_MODE="lnbits"; $env:LIGHTNING_ENV_FILE="..\lightning\.env"
+python -m uvicorn app.main:app --reload
+```
+
+Dans ce mode, le backend refuse de démarrer sans `PONT_JETON_BACKEND`, que le fichier `lightning/.env` fournit.

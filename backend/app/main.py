@@ -1,23 +1,46 @@
 """API Python de la tontine. Lancer avec : uvicorn app.main:app --reload"""
 
 import os
+import secrets
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .conversion import SourceCours, fcfa_vers_sats
-from .lightning import LightningFactice
+from .lightning import Facture, LightningFactice
 from .stockage import Stockage
-from .tontine import ErreurTontine, Moteur, Tontine
+from .tontine import ErreurLightning, ErreurTontine, Moteur, Tontine
 
 app = FastAPI(title="Tontine Lightning")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# A remplacer par le service LNbits d'Alassane quand il sera pret.
-moteur = Moteur(lightning=LightningFactice(), source_cours=SourceCours(),
+MODE_LNBITS = os.environ.get("LIGHTNING_MODE") == "lnbits"
+
+
+def service_lightning():
+    """LNbits si LIGHTNING_MODE=lnbits, sinon le faux service (tests, travail sans Docker)."""
+    if MODE_LNBITS:
+        from tontine_lightning import LightningLNbits
+        ln = LightningLNbits.depuis_env(fabrique_facture=Facture)
+        ln.reprendre_versements_en_cours()  # regle les versements interrompus par une panne
+        return ln
+    return LightningFactice()
+
+
+def jeton_du_pont(mode_lnbits: bool) -> str:
+    """Jeton que le pont doit presenter. Obligatoire des qu'on utilise le vrai Lightning."""
+    jeton = os.environ.get("PONT_JETON_BACKEND", "")
+    if mode_lnbits and not jeton:
+        raise RuntimeError("PONT_JETON_BACKEND manque : le backend refuse de demarrer sans ce jeton")
+    return jeton
+
+
+moteur = Moteur(lightning=service_lightning(), source_cours=SourceCours(),
                 stockage=Stockage(os.environ.get("TONTINE_DB", "tontine.db")))
+JETON_PONT = jeton_du_pont(MODE_LNBITS)     # apres service_lightning(), qui charge le fichier .env
+moteur.reprendre_versements()
 
 
 class NouvelleTontine(BaseModel):
@@ -62,6 +85,8 @@ def executer(action):
         return action()
     except ErreurTontine as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except ErreurLightning:
+        raise HTTPException(status_code=503, detail="Service Lightning indisponible, reessayez")
     except OSError:
         raise HTTPException(status_code=503, detail="Cours du bitcoin indisponible, reessayez")
 
@@ -122,7 +147,9 @@ def relancer_versement(tontine_id: str, d: Organisateur):
 
 
 @app.post("/paiements/confirmation")
-def confirmation(d: Confirmation):
+def confirmation(d: Confirmation, x_jeton_pont: str = Header(default="")):
+    if JETON_PONT and not secrets.compare_digest(x_jeton_pont.encode(), JETON_PONT.encode()):
+        raise HTTPException(status_code=401, detail="Reserve au pont Lightning")
     return vue(executer(lambda: moteur.confirmer_paiement(d.payment_hash, d.preimage)))
 
 

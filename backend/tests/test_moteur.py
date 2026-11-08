@@ -8,7 +8,7 @@ from app.conversion import CoursFixe, fcfa_vers_sats
 from app.lightning import LightningFactice, preimage_valide
 from app.stockage import Stockage
 from app.tontine import (ErreurTontine, Moteur, Statut, StatutCotisation, StatutMembre,
-                         StatutVersement, tirer_ordre)
+                         StatutVersement, VersementEnAttente, tirer_ordre)
 
 
 def test_conversion():
@@ -243,6 +243,97 @@ def test_api_evenements():
     journal = client.get(f"/tontines/{tid}/evenements").json()
     assert [e["type"] for e in journal] == ["membre_inscrit"]
     assert client.get(f"/tontines/{tid}/evenements", params={"depuis": 1}).json() == []
+
+
+def test_preimage_valide_mais_argent_non_recu_refusee():
+    moteur, ln, t = preparer()
+    ln.cotisation_recue = lambda payment_hash: False
+    c = moteur.facture_cotisation(t.id, t.membres[0].id)
+    with pytest.raises(ErreurTontine, match="non recu"):
+        moteur.confirmer_paiement(c.payment_hash, ln.preimages[c.payment_hash])
+    assert c.statut == StatutCotisation.EN_ATTENTE
+
+
+def test_tontines_homonymes_versees_separement():
+    ln = LightningFactice()
+    moteur = Moteur(ln, CoursFixe(100_000))
+    for _ in range(2):
+        t = moteur.creer_tontine("Test", 10_000, "mensuelle", 2, "Awa", "awa@wallet")
+        m = moteur.rejoindre(t.code_invitation, "Ibou", "ibou@wallet")[1]
+        moteur.fixer_ordre(t.id, t.jeton_organisateur, [t.organisateur_id, m.id])
+        moteur.demarrer(t.id, t.jeton_organisateur)
+        payer_tous(moteur, ln, t)
+    assert len(ln.versements) == 2
+
+
+def test_faux_lightning_ne_repaie_jamais():
+    ln = LightningFactice()
+    assert ln.payer("a@w", 10, "x") == ln.payer("a@w", 10, "x")
+    assert len(ln.versements) == 1
+
+
+def en_attente_puis_normal(ln):
+    payer_normal = ln.payer
+
+    def en_attente(*args):
+        raise VersementEnAttente("en vol", "ab" * 32)
+
+    ln.payer = en_attente
+    return payer_normal
+
+
+def test_versement_en_vol_n_est_pas_un_echec_et_peut_etre_relance():
+    moteur, ln, t = preparer()
+    premier = t.tour_actuel
+    payer_normal = en_attente_puis_normal(ln)
+    payer_tous(moteur, ln, t)
+    assert premier.versement_statut == StatutVersement.EN_COURS
+    assert "versement_echec" not in [e.type for e in moteur.evenements(t.id)]
+    assert len(t.tours) == 1
+
+    ln.payer = payer_normal
+    moteur.relancer_versement(t.id, t.jeton_organisateur)
+    assert premier.versement_statut == StatutVersement.FAIT
+    assert len(t.tours) == 2
+    assert len(ln.versements) == 1
+
+
+def test_versement_interrompu_repris_au_demarrage(tmp_path):
+    chemin = str(tmp_path / "test.db")
+    moteur, ln, t = preparer(stockage=Stockage(chemin))
+    payer_normal = en_attente_puis_normal(ln)
+    payer_tous(moteur, ln, t)
+
+    ln.payer = payer_normal
+    relance = Moteur(ln, CoursFixe(100_000), stockage=Stockage(chemin))
+    relance.reprendre_versements()
+    t2 = relance.tontine(t.id)
+    assert t2.tours[0].versement_statut == StatutVersement.FAIT
+    assert len(t2.tours) == 2
+    assert len(ln.versements) == 1
+
+
+def test_confirmation_reservee_au_pont(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+
+    monkeypatch.setattr(main, "JETON_PONT", "jeton-du-pont")
+    client = TestClient(main.app)
+    corps = {"payment_hash": "ab" * 32, "preimage": "cd" * 32}
+    assert client.post("/paiements/confirmation", json=corps).status_code == 401
+    faux = {"X-Jeton-Pont": "mauvais"}
+    assert client.post("/paiements/confirmation", json=corps, headers=faux).status_code == 401
+    bon = {"X-Jeton-Pont": "jeton-du-pont"}
+    assert client.post("/paiements/confirmation", json=corps, headers=bon).status_code == 400
+
+
+def test_vrai_lightning_exige_le_jeton_du_pont(monkeypatch):
+    from app import main
+
+    monkeypatch.delenv("PONT_JETON_BACKEND", raising=False)
+    assert main.jeton_du_pont(False) == ""
+    with pytest.raises(RuntimeError):
+        main.jeton_du_pont(True)
 
 
 def test_api_ne_montre_pas_le_jeton():

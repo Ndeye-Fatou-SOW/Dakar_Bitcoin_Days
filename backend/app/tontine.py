@@ -13,6 +13,13 @@ from enum import Enum
 from .conversion import fcfa_vers_sats
 from .lightning import Lightning, preimage_valide
 
+try:
+    from tontine_lightning import ErreurLightning, ErreurLNbits, VersementEnAttente
+except ImportError:     # paquet d'Alassane absent : le faux service n'en a pas besoin
+    class ErreurLightning(Exception): ...
+    class ErreurLNbits(ErreurLightning): ...
+    class VersementEnAttente(ErreurLightning): ...
+
 SECONDES_PAR_JOUR = 86_400
 journal = logging.getLogger(__name__)
 
@@ -39,7 +46,7 @@ class StatutMembre(str, Enum):
 
 class StatutVersement(str, Enum):
     AUCUN = "aucun"
-    EN_COURS = "en_cours"   # si le serveur s'arrete ici, il faut verifier a la main
+    EN_COURS = "en_cours"   # issue pas encore connue : on peut reprendre sans repayer
     FAIT = "fait"
     ECHEC = "echec"
 
@@ -370,6 +377,10 @@ class Moteur:
             c = tour.cotisations[membre_id]
             if c.statut == StatutCotisation.PAYE:
                 return t  # notification repetee : on l'ignore
+            # LNbits connait la preimage des la creation de la facture : elle ne prouve rien
+            # a elle seule. Seule la reception constatee par Lightning prouve le paiement.
+            if not self.lightning.cotisation_recue(payment_hash):
+                raise ErreurTontine("Paiement non recu par le noeud Lightning")
             c.statut, c.preimage = StatutCotisation.PAYE, preimage
             m = t.membre(membre_id)
             m.amendes_dues_fcfa = max(0, m.amendes_dues_fcfa - c.amende_fcfa)
@@ -408,25 +419,37 @@ class Moteur:
             return t
 
     def relancer_versement(self, tontine_id: str, jeton: str) -> Tontine:
-        """Reessaie un versement dont l'echec a ete signale par Lightning."""
+        """Reessaie un versement en echec ou en cours. payer() ne repaie jamais un versement parti."""
         with self._verrou:
             t = self.tontine(tontine_id)
             self._verifier_jeton(t, jeton)
-            if t.tour_actuel is None or t.tour_actuel.versement_statut != StatutVersement.ECHEC:
+            if t.tour_actuel is None or t.tour_actuel.versement_statut not in (
+                    StatutVersement.ECHEC, StatutVersement.EN_COURS):
                 raise ErreurTontine("Aucun versement a relancer")
             self._verser(t)
             return t
+
+    def reprendre_versements(self):
+        """Au demarrage : termine les versements interrompus par une panne."""
+        with self._verrou:
+            for t in self.tontines.values():
+                if (t.statut == Statut.EN_COURS
+                        and t.tour_actuel.versement_statut == StatutVersement.EN_COURS):
+                    self._verser(t)
 
     def _verser(self, t: Tontine):
         tour = t.tour_actuel
         beneficiaire = t.membre(tour.beneficiaire_id)
         total = sum(c.montant_sats for c in tour.cotisations.values())
-        # Enregistre avant de payer : apres une panne, on ne verse pas une seconde fois.
+        # Enregistre avant de payer, pour pouvoir reprendre ce versement apres une panne.
         tour.versement_statut = StatutVersement.EN_COURS
         self._sauver(t)
+        # La description identifie le versement : elle doit etre unique et ne jamais changer.
+        description = f"{t.nom} - cagnotte du tour {tour.numero} ({t.id})"
         try:
-            preimage = self.lightning.payer(
-                beneficiaire.adresse_lightning, total, f"{t.nom} - cagnotte du tour {tour.numero}")
+            preimage = self.lightning.payer(beneficiaire.adresse_lightning, total, description)
+        except (VersementEnAttente, ErreurLNbits):
+            return      # issue inconnue : reste EN_COURS, ce n'est pas un echec
         except Exception:
             tour.versement_statut = StatutVersement.ECHEC
             self._emettre(t, "versement_echec", tour.numero,

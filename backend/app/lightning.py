@@ -20,8 +20,15 @@ class Facture:
 class Lightning(Protocol):
     def creer_facture(self, montant_sats: int, description: str) -> Facture: ...
 
+    def cotisation_recue(self, payment_hash: str) -> bool:
+        """Vrai seulement si l'argent de cette facture est reellement arrive."""
+        ...
+
     def payer(self, adresse_lightning: str, montant_sats: int, description: str) -> str:
-        """Envoie le paiement et renvoie la preimage (hexadecimal) en cas de succes."""
+        """Envoie le paiement et renvoie la preimage (hexadecimal) en cas de succes.
+
+        Doit etre idempotent : rappeler payer() avec les memes arguments ne repaie jamais.
+        """
         ...
 
 
@@ -40,6 +47,7 @@ class LightningFactice:
     def __init__(self):
         self.preimages: dict[str, str] = {}   # payment_hash -> preimage
         self.versements: list[tuple[str, int]] = []
+        self._deja_verses: dict[tuple[str, int, str], str] = {}
 
     def creer_facture(self, montant_sats: int, description: str) -> Facture:
         preimage = secrets.token_hex(32)
@@ -48,6 +56,12 @@ class LightningFactice:
         return Facture(payment_request=f"lntbfactice{montant_sats}n1{payment_hash[:20]}",
                        payment_hash=payment_hash)
 
+    def cotisation_recue(self, payment_hash: str) -> bool:
+        return payment_hash in self.preimages
+
     def payer(self, adresse_lightning: str, montant_sats: int, description: str) -> str:
-        self.versements.append((adresse_lightning, montant_sats))
-        return secrets.token_hex(32)
+        cle = (adresse_lightning, montant_sats, description)
+        if cle not in self._deja_verses:
+            self.versements.append((adresse_lightning, montant_sats))
+            self._deja_verses[cle] = secrets.token_hex(32)
+        return self._deja_verses[cle]
