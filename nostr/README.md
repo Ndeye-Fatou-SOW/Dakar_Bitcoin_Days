@@ -27,16 +27,24 @@ Ce dossier contient le registre sur Nostr et l'historique des tours. Tu t'occupe
 
 Le registre public ne doit contenir **ni nom ni numéro de téléphone**. Pour identifier un membre, utilise la fonction `empreinte_anonyme(membre_id, sel)` de `backend/app/tontine.py`. Le `sel` doit rester secret : il ne doit jamais être envoyé sur le dépôt.
 
-## Publier une preuve à chaque événement
+## Activer la publication
 
-Le moteur signale ce qui se passe. Pour recevoir ces signaux, branche ta fonction dans `backend/app/main.py` :
+La publication est désactivée par défaut, car ce qui part sur des relais publics ne se retire pas. Pour l'activer, sous Windows PowerShell :
 
-```python
-moteur.abonner(publier_sur_nostr)   # appelée avec chaque événement
+```
+cd nostr
+python generer_secrets.py
+cd ..\backend
+python -m pip install -r requirements-nostr.txt
+$env:NOSTR_MODE="actif"
+python -m uvicorn app.main:app --reload
 ```
 
-Pour le registre, les événements utiles sont `cotisation_payee` et `versement_fait`. Ils contiennent `preimage` et `montant_sats` dans `evenement.donnees`, et `cotisation_payee` contient aussi `payment_hash`.
+`registre_nostr/publieur.py` publie alors automatiquement chaque cotisation et chaque versement, dans l'ordre. Si les relais sont injoignables, il réessaie, et il reprend au bon endroit après un redémarrage.
 
-Les événements contiennent le `membre_id`, qu'il faut passer dans `empreinte_anonyme` avant de publier.
+Les retards ne sont pas publiés tant que l'équipe n'a pas décidé. Pour les publier : `$env:NOSTR_PUBLIER_RETARDS="oui"`.
 
-Si Nostr est injoignable, le signal n'est pas renvoyé. Garde le dernier `numero` publié et récupère la suite avec `GET /tontines/{id}/evenements?depuis=<numero>`.
+## Retrouver une preuve
+
+- `GET /registre` donne la clé publique du service, les relais et le kind.
+- `GET /tontines/{id}` donne `identifiant_registre`. Les preuves de la tontine portent l'étiquette `tl-<identifiant_registre>`.

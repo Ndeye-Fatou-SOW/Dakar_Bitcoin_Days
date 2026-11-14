@@ -240,9 +240,10 @@ def test_api_evenements():
     tid = r["tontine"]["id"]
     assert "evenements" not in r["tontine"]
     client.post(r["lien_invitation"], json={"nom": "Ibou", "adresse_lightning": "i@w"})
-    journal = client.get(f"/tontines/{tid}/evenements").json()
+    entete = {"X-Jeton": r["jeton_organisateur"]}
+    journal = client.get(f"/tontines/{tid}/evenements", headers=entete).json()
     assert [e["type"] for e in journal] == ["membre_inscrit"]
-    assert client.get(f"/tontines/{tid}/evenements", params={"depuis": 1}).json() == []
+    assert client.get(f"/tontines/{tid}/evenements", params={"depuis": 1}, headers=entete).json() == []
 
 
 def test_preimage_valide_mais_argent_non_recu_refusee():
@@ -336,6 +337,144 @@ def test_vrai_lightning_exige_le_jeton_du_pont(monkeypatch):
         main.jeton_du_pont(True)
 
 
+def test_adresse_invalide_refusee_a_l_inscription():
+    moteur = Moteur(LightningFactice(), CoursFixe(100_000))
+    for adresse in ["awa", "awa@", "@wallet", "awa wallet@x", "a@b@c"]:
+        with pytest.raises(ErreurTontine, match="Adresse"):
+            moteur.creer_tontine("T", 1000, "mensuelle", 2, "Awa", adresse)
+    t = moteur.creer_tontine("T", 1000, "mensuelle", 2, "Awa", " awa@wallet ")
+    assert t.membres[0].adresse_lightning == "awa@wallet"
+    with pytest.raises(ErreurTontine, match="Adresse"):
+        moteur.rejoindre(t.code_invitation, "Ibou", "ibou")
+
+
+def test_le_membre_corrige_son_adresse_et_la_cagnotte_y_part():
+    moteur, ln, t = preparer()
+    beneficiaire = t.membre(t.tour_actuel.beneficiaire_id)
+    autre = next(m for m in t.membres if m.id != beneficiaire.id)
+    with pytest.raises(ErreurTontine, match="membre lui-meme"):
+        moteur.changer_adresse(t.id, beneficiaire.id, autre.jeton, "voleur@wallet")
+    with pytest.raises(ErreurTontine, match="Adresse"):
+        moteur.changer_adresse(t.id, beneficiaire.id, beneficiaire.jeton, "pas-une-adresse")
+    moteur.changer_adresse(t.id, beneficiaire.id, beneficiaire.jeton, "nouvelle@wallet")
+    payer_tous(moteur, ln, t)
+    assert ln.versements[0][0] == "nouvelle@wallet"
+    assert "adresse_modifiee" in [e.type for e in moteur.evenements(t.id)]
+
+
+def test_adresse_bloquee_pendant_un_versement_en_vol():
+    moteur, ln, t = preparer()
+    beneficiaire = t.membre(t.tour_actuel.beneficiaire_id)
+    payer_normal = en_attente_puis_normal(ln)
+    payer_tous(moteur, ln, t)
+    with pytest.raises(ErreurTontine, match="Versement en cours"):
+        moteur.changer_adresse(t.id, beneficiaire.id, beneficiaire.jeton, "autre@wallet")
+    ln.payer = payer_normal
+
+
+def test_facture_expiree_remplacee_au_cours_du_moment():
+    maintenant = [1_000.0]
+    cours = CoursFixe(100_000)
+    ln = LightningFactice()
+    moteur = Moteur(ln, cours, horloge=lambda: maintenant[0], validite_facture_s=900)
+    t = moteur.creer_tontine("T", 10_000, "mensuelle", 2, "Awa", "awa@wallet")
+    moteur.rejoindre(t.code_invitation, "Ibou", "ibou@wallet")
+    moteur.tirer_au_sort(t.id, t.jeton_organisateur)
+    moteur.demarrer(t.id, t.jeton_organisateur)
+    membre = t.membres[0]
+
+    premiere = moteur.facture_cotisation(t.id, membre.id).payment_hash
+    maintenant[0] += 900   # pas encore expiree, marge comprise
+    assert moteur.facture_cotisation(t.id, membre.id).payment_hash == premiere
+
+    maintenant[0] += 61
+    cours.cours = 50_000   # le bitcoin a baisse : il faut plus de sats
+    c = moteur.facture_cotisation(t.id, membre.id)
+    assert c.payment_hash != premiere
+    assert c.montant_sats == fcfa_vers_sats(10_000, 50_000)
+    moteur.confirmer_paiement(c.payment_hash, ln.preimages[c.payment_hash])
+    assert c.statut == StatutCotisation.PAYE
+
+
+def test_sans_validite_la_facture_est_gardee():
+    maintenant = [1_000.0]
+    moteur, ln, t = preparer(horloge=lambda: maintenant[0])
+    premiere = moteur.facture_cotisation(t.id, t.membres[0].id).payment_hash
+    maintenant[0] += 30 * 86_400
+    assert moteur.facture_cotisation(t.id, t.membres[0].id).payment_hash == premiere
+
+
+def test_api_jetons_des_membres():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    r = client.post("/tontines", json={"nom": "T", "montant_fcfa": 1000, "nombre_membres": 2,
+                                       "nom_organisateur": "Awa", "adresse_lightning": "a@w"}).json()
+    tid, jeton_awa = r["tontine"]["id"], r["jeton_membre"]
+    awa = r["tontine"]["organisateur_id"]
+    ibou = client.post(r["lien_invitation"], json={"nom": "Ibou", "adresse_lightning": "i@w"}).json()
+    lecture = str(client.get(f"/tontines/{tid}", headers={"X-Jeton": jeton_awa}).json())
+    assert jeton_awa not in lecture and ibou["jeton_membre"] not in lecture
+
+    url = f"/tontines/{tid}/membres/{awa}/adresse"
+    assert client.put(url, json={"jeton_membre": ibou["jeton_membre"], "adresse_lightning": "x@w"}).status_code == 400
+    ok = client.put(url, json={"jeton_membre": jeton_awa, "adresse_lightning": "awa@nouveau"})
+    assert ok.status_code == 200
+    assert ok.json()["membres"][0]["adresse_lightning"] == "awa@nouveau"
+
+
+def test_ancienne_facture_reconnue_apres_redemarrage(tmp_path):
+    chemin = str(tmp_path / "test.db")
+    maintenant = [1_000.0]
+    ln = LightningFactice()
+    moteur = Moteur(ln, CoursFixe(100_000), stockage=Stockage(chemin),
+                    horloge=lambda: maintenant[0], validite_facture_s=900)
+    t = moteur.creer_tontine("T", 10_000, "mensuelle", 2, "Awa", "awa@wallet")
+    moteur.rejoindre(t.code_invitation, "Ibou", "ibou@wallet")
+    moteur.tirer_au_sort(t.id, t.jeton_organisateur)
+    moteur.demarrer(t.id, t.jeton_organisateur)
+    membre = t.membres[0]
+    ancienne = moteur.facture_cotisation(t.id, membre.id).payment_hash
+    maintenant[0] += 2_000
+    nouvelle = moteur.facture_cotisation(t.id, membre.id).payment_hash
+    assert nouvelle != ancienne
+
+    # Le serveur redemarre, puis la notification du paiement de l'ancienne facture arrive.
+    relance = Moteur(ln, CoursFixe(100_000), stockage=Stockage(chemin), horloge=lambda: maintenant[0])
+    relance.confirmer_paiement(ancienne, ln.preimages[ancienne])
+    c = relance.tontine(t.id).tour_actuel.cotisations[membre.id]
+    assert c.statut == StatutCotisation.PAYE
+
+
+def test_api_lecture_reservee_aux_membres():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    creer = lambda: client.post("/tontines", json={"nom": "T", "montant_fcfa": 1000, "nombre_membres": 2,
+                                                   "nom_organisateur": "Awa", "adresse_lightning": "a@w"}).json()
+    r, autre = creer(), creer()
+    tid, awa = r["tontine"]["id"], r["tontine"]["organisateur_id"]
+    ibou = client.post(r["lien_invitation"], json={"nom": "Ibou", "adresse_lightning": "i@w"}).json()
+
+    lire = lambda jeton: client.get(f"/tontines/{tid}", headers={"X-Jeton": jeton} if jeton else {}).status_code
+    assert lire(None) == 403
+    assert lire("faux") == 403
+    assert lire(autre["jeton_membre"]) == 403            # membre d'une autre tontine
+    assert lire(ibou["jeton_membre"]) == 200
+    assert lire(r["jeton_organisateur"]) == 200
+    assert client.get(f"/tontines/{tid}/evenements").status_code == 403
+
+    client.post(f"/tontines/{tid}/tirage", json={"jeton_organisateur": r["jeton_organisateur"]})
+    client.post(f"/tontines/{tid}/demarrer", json={"jeton_organisateur": r["jeton_organisateur"]})
+    facture = lambda jeton: client.post(f"/tontines/{tid}/membres/{awa}/facture",
+                                        headers={"X-Jeton": jeton}).status_code
+    assert facture(ibou["jeton_membre"]) == 403          # Ibou ne demande pas la facture d'Awa
+    assert facture(r["jeton_membre"]) != 403
+    assert facture(r["jeton_organisateur"]) != 403
+
+
 def test_api_ne_montre_pas_le_jeton():
     from fastapi.testclient import TestClient
     from app.main import app
@@ -345,6 +484,6 @@ def test_api_ne_montre_pas_le_jeton():
                                        "nom_organisateur": "Awa", "adresse_lightning": "a@w"}).json()
     tid, jeton = r["tontine"]["id"], r["jeton_organisateur"]
     assert "jeton_organisateur" not in r["tontine"]
-    assert jeton not in str(client.get(f"/tontines/{tid}").json())
+    assert jeton not in str(client.get(f"/tontines/{tid}", headers={"X-Jeton": jeton}).json())
     refus = client.post(f"/tontines/{tid}/tirage", json={"jeton_organisateur": r["tontine"]["organisateur_id"]})
     assert refus.status_code == 400
