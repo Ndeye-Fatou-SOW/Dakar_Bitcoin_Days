@@ -3,6 +3,8 @@
 Application de tontine payée en Bitcoin Lightning, avec une preuve de chaque paiement publiée sur Nostr.
 Projet pour le Hackathon #4 des Dakar Bitcoin Days (dépôt avant le 20 novembre 2026).
 
+**Pour installer et essayer le projet, voir le [guide d'installation](INSTALLATION.md).**
+
 ## Qui fait quoi
 
 | Dossier | Responsable | Contenu |
