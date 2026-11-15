@@ -1,45 +1,55 @@
-# Interface et temps réel – Malick Fall
+# Interface web responsive – Malick Fall
 
-Ce dossier contient les écrans, la mise à jour en temps réel des statuts, les rappels et le déploiement.
+Application web React + TypeScript, conçue d’abord pour les téléphones. Elle se connecte à l’API FastAPI du dossier `backend/`.
 
-## À faire
+## Lancer l’application
 
-- [ ] Choisir React ou Flutter avec l'équipe
-- [ ] Écrans : créer une tontine, rejoindre, ordre de passage, payer par QR code, suivi des membres
-- [ ] Mise à jour en temps réel des statuts (notifications Lightning et WebSocket)
-- [ ] Rappels avant la date limite et affichage des amendes
-- [ ] Reprise après une panne, déploiement et démo en direct
+Depuis ce dossier :
 
-## Utiliser l'API
+```powershell
+npm install
+npm run dev
+```
 
-Pour lancer le backend, suis le README à la racine du dépôt. La documentation complète s'ouvre ensuite sur http://127.0.0.1:8000/docs
+Le serveur Vite affiche l’adresse locale dans le terminal. Lance aussi le backend FastAPI sur `http://127.0.0.1:8000` en suivant le README à la racine du dépôt.
+
+Pour pointer vers une autre API, définis `VITE_API_URL` dans un fichier `.env` local :
+
+```env
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+Vérification de production :
+
+```powershell
+npm run build
+```
+
+## Parcours actuellement disponibles
+
+- Créer une tontine et enregistrer l’organisateur sur cet appareil.
+- Partager un lien d’invitation, ou rejoindre avec un code.
+- Suivre les membres et l’état des cotisations.
+- Tirer l’ordre au sort et démarrer un tour (organisateur).
+- Demander et afficher la facture Lightning du membre courant sous forme de QR code.
+- Actualiser l’état depuis l’API toutes les cinq secondes.
+
+Le jeton organisateur reste dans le stockage local du navigateur qui a créé la tontine. Ne partage pas cet appareil ni ses données de navigateur avec d’autres personnes.
+
+## Intégration de l’API
 
 | Action | Requête |
 |---|---|
 | Créer une tontine | `POST /tontines` |
 | Voir une tontine et sa situation | `GET /tontines/{id}` |
-| Rejoindre avec le lien d'invitation | `POST /rejoindre/{code}` |
-| Tirer l'ordre de passage au sort | `POST /tontines/{id}/tirage` |
-| Choisir l'ordre à la main | `POST /tontines/{id}/ordre` |
+| Rejoindre avec le lien d’invitation | `POST /rejoindre/{code}` |
+| Tirer l’ordre de passage au sort | `POST /tontines/{id}/tirage` |
 | Démarrer | `POST /tontines/{id}/demarrer` |
 | Obtenir la facture à afficher en QR code | `POST /tontines/{id}/membres/{membre_id}/facture` |
-| Exclure un membre en retard | `POST /tontines/{id}/membres/{membre_id}/exclure` |
-| Relancer un versement en échec | `POST /tontines/{id}/versement/relancer` |
 
-## Bon à savoir
+## Limites du MVP
 
-- `POST /tontines` renvoie un `jeton_organisateur`. Garde-le uniquement sur l'appareil de l'organisateur : il est demandé pour le tirage, l'ordre, le démarrage, l'exclusion et la relance.
-- Le QR code se fabrique à partir du champ `payment_request` de la facture.
-- `GET /tontines/{id}` renvoie un champ `situation` avec, pour chaque membre : `nom`, `statut`, `en_defaut` et `montant_du_fcfa`. C'est ce qu'il faut afficher dans la liste.
-
-## Temps réel
-
-Dans `backend/app/main.py`, `moteur.abonner(ta_fonction)` appelle ta fonction à chaque événement : c'est là que tu peux envoyer le message WebSocket. La fonction tourne dans un fil séparé, hors de la boucle `asyncio` de FastAPI.
-
-Types d'événements : `membre_inscrit`, `ordre_fixe`, `nouveau_tour`, `membre_en_defaut`, `cotisation_payee`, `membre_exclu`, `versement_fait`, `versement_echec`, `tontine_terminee`.
-
-Après une coupure, l'écran récupère ce qu'il a manqué avec `GET /tontines/{id}/evenements?depuis=<dernier numero reçu>`.
-
-## À décider avec Fatou
-
-La détection des retards et le calcul des amendes sont déjà dans le moteur. Il reste à se mettre d'accord sur le partage : par exemple, les rappels et l'affichage de ton côté.
+- L’actualisation utilise le polling; le WebSocket et les rappels automatiques restent à intégrer.
+- Le registre Nostr et l’historique détaillé ne sont pas encore connectés à l’interface.
+- Le QR code est généré localement dans le navigateur à partir de la facture Lightning.
+- Le parcours de paiement doit être testé avec un backend et un nœud Lightning adaptés au réseau choisi pour la démo.
