@@ -3,6 +3,7 @@ import os
 import pytest
 
 os.environ["TONTINE_DB"] = ":memory:"
+os.environ.pop("DATABASE_URL", None)   # les tests n'ecrivent jamais dans une vraie base
 
 from app.conversion import CoursFixe, fcfa_vers_sats
 from app.lightning import LightningFactice, preimage_valide

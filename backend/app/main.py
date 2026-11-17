@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .conversion import SourceCours, fcfa_vers_sats
 from .lightning import Facture, LightningFactice
-from .stockage import Stockage
+from .stockage import ouvrir_stockage
 from .tontine import ErreurAcces, ErreurLightning, ErreurTontine, Moteur, Tontine, empreinte_anonyme
 
 app = FastAPI(title="Tontine Lightning")
@@ -42,7 +42,9 @@ def jeton_du_pont(mode_lnbits: bool) -> str:
 lightning = service_lightning()
 # Avec LNbits, le moteur connait la duree de vie des factures et remplace celles qui ont expire.
 moteur = Moteur(lightning=lightning, source_cours=SourceCours(),
-                stockage=Stockage(os.environ.get("TONTINE_DB", "tontine.db")),
+                # DATABASE_URL (PostgreSQL, par exemple sur Render), sinon un fichier SQLite.
+                stockage=ouvrir_stockage(os.environ.get("DATABASE_URL")
+                                         or os.environ.get("TONTINE_DB", "tontine.db")),
                 validite_facture_s=lightning.reglages.expiration_facture_s if MODE_LNBITS else None)
 JETON_PONT = jeton_du_pont(MODE_LNBITS)     # apres service_lightning(), qui charge le fichier .env
 moteur.reprendre_versements()
