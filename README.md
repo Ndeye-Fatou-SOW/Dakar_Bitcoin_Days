@@ -3,6 +3,8 @@
 Application de tontine payée en Bitcoin Lightning, avec une preuve de chaque paiement publiée sur Nostr.
 Projet pour le Hackathon #4 des Dakar Bitcoin Days (dépôt avant le 20 novembre 2026).
 
+**Pour installer et essayer le projet, voir le [guide d'installation](INSTALLATION.md).**
+
 ## Qui fait quoi
 
 | Dossier | Responsable | Contenu |
@@ -25,28 +27,31 @@ git commit -m "ce que j'ai fait"
 git push
 ```
 
-## Lancer le backend
+## Lancer toute l'application avec Docker
 
-```
-cd backend
-python -m pip install -r requirements.txt
-python -m pytest
-python -m uvicorn app.main:app --reload
-```
+Prérequis : Docker Desktop démarré. Depuis PowerShell, pour la première initialisation du regtest :
 
-La documentation de l'API s'ouvre ensuite sur http://127.0.0.1:8000/docs
-
-Par défaut, le backend utilise un faux Lightning : pas besoin de Docker pour travailler sur le reste.
-
-## Lancer le backend avec le vrai Lightning
-
-Il faut d'abord démarrer le réseau de test (voir [lightning/README.md](lightning/README.md)), puis, sous Windows PowerShell :
-
-```
-cd backend
-python -m pip install -r requirements-lightning.txt
-$env:LIGHTNING_MODE="lnbits"; $env:LIGHTNING_ENV_FILE="..\lightning\.env"
-python -m uvicorn app.main:app --reload
+```powershell
+cd lightning
+python scripts\regtest.py init
 ```
 
-Dans ce mode, le backend refuse de démarrer sans `PONT_JETON_BACKEND`, que le fichier `lightning/.env` fournit.
+Cette commande initialise le réseau Bitcoin/Lightning local puis construit et démarre LNbits, le pont, l'API et le front dans Docker. L'application est disponible sur :
+
+- Front responsive : http://127.0.0.1:5173
+- API : http://127.0.0.1:8000/docs
+- LNbits : http://127.0.0.1:5000
+
+Les données de la tontine, du portefeuille et du réseau sont conservées dans des volumes Docker. Pour les démarrages suivants, depuis `lightning` :
+
+```powershell
+docker compose --profile pont --profile app up -d
+```
+
+Pour arrêter les conteneurs sans effacer les données :
+
+```powershell
+docker compose --profile pont --profile app stop
+```
+
+Le mode Lightning fictif reste disponible pour le développement backend hors Docker. Pour les étapes de démo regtest et le paiement d'une facture, voir [lightning/README.md](lightning/README.md).

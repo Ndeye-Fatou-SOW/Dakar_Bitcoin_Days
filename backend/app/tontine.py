@@ -21,11 +21,22 @@ except ImportError:     # paquet d'Alassane absent : le faux service n'en a pas 
     class VersementEnAttente(ErreurLightning): ...
 
 SECONDES_PAR_JOUR = 86_400
+MARGE_EXPIRATION_S = 60     # on attend un peu apres l'expiration avant de refaire une facture
 journal = logging.getLogger(__name__)
+
+
+def adresse_valide(adresse: str) -> bool:
+    """Controle simple : une adresse Lightning a la forme nom@domaine, sans espace."""
+    nom, arobase, domaine = adresse.strip().partition("@")
+    return bool(arobase and nom and domaine and "@" not in domaine and not any(c.isspace() for c in adresse.strip()))
 
 
 class ErreurTontine(Exception):
     """Action refusee par les regles de la tontine."""
+
+
+class ErreurAcces(ErreurTontine):
+    """La personne n'a pas le jeton qui lui donne acces a cette tontine."""
 
 
 class Statut(str, Enum):
@@ -58,6 +69,7 @@ class Membre:
     adresse_lightning: str
     statut: StatutMembre = StatutMembre.ACTIF
     amendes_dues_fcfa: int = 0
+    jeton: str = ""     # secret : donne uniquement au membre, jamais affiche aux autres
 
 
 @dataclass
@@ -70,6 +82,9 @@ class Cotisation:
     payment_request: str | None = None
     payment_hash: str | None = None
     preimage: str | None = None
+    facture_creee_le: float | None = None
+    # Factures expirees remplacees : un paiement fait juste avant l'expiration reste reconnu.
+    anciennes_factures: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -138,11 +153,15 @@ def tirer_ordre(membre_ids: list[str], graine: str) -> list[str]:
 class Moteur:
     """Applique les regles et enregistre chaque changement."""
 
-    def __init__(self, lightning: Lightning, source_cours, stockage=None, horloge=time.time):
+    def __init__(self, lightning: Lightning, source_cours, stockage=None, horloge=time.time,
+                 validite_facture_s: float | None = None):
         self.lightning = lightning
         self.source_cours = source_cours
         self.stockage = stockage
         self.horloge = horloge
+        # Duree de vie des factures chez Lightning. Une facture expiree est remplacee par une
+        # nouvelle, au cours du moment. None : la facture est gardee jusqu'au paiement.
+        self.validite_facture_s = validite_facture_s
         self.tontines: dict[str, Tontine] = {}
         self._factures: dict[str, tuple[str, int, str]] = {}  # hash -> (tontine, tour, membre)
         self._verrou = threading.RLock()
@@ -155,8 +174,9 @@ class Moteur:
                 self.tontines[t.id] = t
                 for tour in t.tours:
                     for c in tour.cotisations.values():
-                        if c.payment_hash:
-                            self._factures[c.payment_hash] = (t.id, tour.numero, c.membre_id)
+                        for payment_hash in [c.payment_hash, *c.anciennes_factures]:
+                            if payment_hash:
+                                self._factures[payment_hash] = (t.id, tour.numero, c.membre_id)
 
     def _sauver(self, t: Tontine):
         if self.stockage is not None:
@@ -212,8 +232,11 @@ class Moteur:
             raise ErreurTontine("Le montant doit etre positif")
         if delai_jours < 1 or amende_fcfa < 0:
             raise ErreurTontine("Delai ou amende invalide")
+        if not adresse_valide(adresse_organisateur):
+            raise ErreurTontine("Adresse Lightning invalide : elle doit avoir la forme nom@domaine")
         with self._verrou:
-            organisateur = Membre(secrets.token_hex(8), nom_organisateur, adresse_organisateur)
+            organisateur = Membre(secrets.token_hex(8), nom_organisateur, adresse_organisateur.strip(),
+                                  jeton=secrets.token_urlsafe(24))
             t = Tontine(id=secrets.token_hex(8), nom=nom, montant_fcfa=montant_fcfa,
                         frequence=frequence, nombre_membres=nombre_membres,
                         organisateur_id=organisateur.id,
@@ -225,11 +248,24 @@ class Moteur:
             self._sauver(t)
             return t
 
+    def identifiants_tontines(self) -> list[str]:
+        with self._verrou:
+            return list(self.tontines)
+
     def tontine(self, tontine_id: str) -> Tontine:
         t = self.tontines.get(tontine_id)
         if t is None:
             raise ErreurTontine("Tontine introuvable")
         return t
+
+    def verifier_acces(self, tontine_id: str, jeton: str, membre_id: str | None = None) -> Tontine:
+        """Accepte le jeton de l'organisateur, ou celui d'un membre (de ce membre-la si membre_id est donne)."""
+        t = self.tontine(tontine_id)
+        egal = lambda secret: bool(secret) and secrets.compare_digest(jeton.encode(), secret.encode())
+        membres = [t.membre(membre_id)] if membre_id else t.membres
+        if egal(t.jeton_organisateur) or any(egal(m.jeton) for m in membres):
+            return t
+        raise ErreurAcces("Acces reserve aux membres de la tontine")
 
     def etat(self, tontine_id: str) -> Tontine:
         """Renvoie la tontine apres avoir pris en compte les retards."""
@@ -247,11 +283,32 @@ class Moteur:
                 raise ErreurTontine("Les inscriptions sont fermees")
             if len(t.membres) >= t.nombre_membres:
                 raise ErreurTontine("La tontine est complete")
-            m = Membre(secrets.token_hex(8), nom, adresse_lightning)
+            if not adresse_valide(adresse_lightning):
+                raise ErreurTontine("Adresse Lightning invalide : elle doit avoir la forme nom@domaine")
+            m = Membre(secrets.token_hex(8), nom, adresse_lightning.strip(), jeton=secrets.token_urlsafe(24))
             t.membres.append(m)
             self._emettre(t, "membre_inscrit", membre_id=m.id)
             self._sauver(t)
             return t, m
+
+    def changer_adresse(self, tontine_id: str, membre_id: str, jeton: str, adresse: str) -> Tontine:
+        """Le membre corrige son adresse Lightning, par exemple apres un versement refuse."""
+        with self._verrou:
+            t = self.tontine(tontine_id)
+            m = t.membre(membre_id)
+            if not secrets.compare_digest(jeton.encode(), m.jeton.encode()) or not m.jeton:
+                raise ErreurTontine("Seul le membre lui-meme peut changer son adresse")
+            if not adresse_valide(adresse):
+                raise ErreurTontine("Adresse Lightning invalide : elle doit avoir la forme nom@domaine")
+            tour = t.tour_actuel
+            if (tour is not None and tour.beneficiaire_id == membre_id
+                    and tour.versement_statut == StatutVersement.EN_COURS):
+                # Un versement est peut-etre deja parti vers l'ancienne adresse.
+                raise ErreurTontine("Versement en cours vers cette adresse : attendez son resultat")
+            m.adresse_lightning = adresse.strip()
+            self._emettre(t, "adresse_modifiee", tour.numero if tour else None, membre_id=membre_id)
+            self._sauver(t)
+            return t
 
     # --- Ordre de passage ---
 
@@ -353,12 +410,20 @@ class Moteur:
                 raise ErreurTontine("Membre inconnu")
             if c.statut == StatutCotisation.PAYE:
                 raise ErreurTontine("Cotisation deja payee")
+            if (c.payment_hash is not None and self.validite_facture_s is not None
+                    and c.facture_creee_le is not None
+                    and self.horloge() > c.facture_creee_le + self.validite_facture_s + MARGE_EXPIRATION_S):
+                # Facture expiree : elle ne peut plus etre payee. On en refait une au cours du moment,
+                # en gardant l'ancienne connue au cas ou un paiement serait arrive juste avant.
+                c.anciennes_factures.append(c.payment_hash)
+                c.payment_hash = None
             if c.payment_hash is None:
                 amende = t.membre(membre_id).amendes_dues_fcfa
                 sats = fcfa_vers_sats(t.montant_fcfa + amende, self.source_cours.cours_btc_eur())
                 f = self.lightning.creer_facture(sats, f"{t.nom} - tour {tour.numero}")
                 c.amende_fcfa = amende
                 c.montant_sats, c.payment_request, c.payment_hash = sats, f.payment_request, f.payment_hash
+                c.facture_creee_le = self.horloge()
                 self._factures[f.payment_hash] = (t.id, tour.numero, membre_id)
                 self._sauver(t)
             return c
@@ -410,8 +475,9 @@ class Moteur:
             if membre_id in t.ordre[tour.numero:]:
                 t.ordre.remove(membre_id)   # il ne recevra pas de cagnotte
             del tour.cotisations[membre_id]
-            if c.payment_hash:
-                self._factures.pop(c.payment_hash, None)
+            for payment_hash in [c.payment_hash, *c.anciennes_factures]:
+                if payment_hash:
+                    self._factures.pop(payment_hash, None)
             self._emettre(t, "membre_exclu", tour.numero, membre_id=membre_id)
             self._sauver(t)
             if tour.complet and tour.versement_statut == StatutVersement.AUCUN:

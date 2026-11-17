@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { nip19 } from "nostr-tools";
+import { verifyEvent, type Event as NostrEvent } from "nostr-tools/pure";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const SESSION_KEY = "tontine-lightning-session";
@@ -54,11 +56,13 @@ interface Tontine {
   tours: Tour[];
   statut: TontineStatus;
   situation: SituationMembre[];
+  identifiant_registre: string | null;
 }
 
 interface Session {
   tontineId: string;
   memberId: string;
+  memberToken: string;
   organizerToken?: string;
   invitationCode: string;
 }
@@ -72,12 +76,64 @@ interface Invoice {
 interface CreateResponse {
   tontine: Tontine;
   jeton_organisateur: string;
+  jeton_membre: string;
   lien_invitation: string;
 }
 
 interface JoinResponse {
   tontine_id: string;
   membre_id: string;
+  jeton_membre: string;
+}
+
+interface RegistryInfo {
+  actif: boolean;
+  cle_publique?: string;
+  relais?: string[];
+  kind?: number;
+}
+
+type ProofType = "cotisation_payee" | "versement_fait" | "membre_en_defaut";
+
+function isProofType(value: unknown): value is ProofType {
+  return value === "cotisation_payee" || value === "versement_fait" || value === "membre_en_defaut";
+}
+
+interface ProofPayload {
+  v: 1;
+  application: "tontine-lightning";
+  type: ProofType;
+  tontine: string;
+  numero: number;
+  tour: number | null;
+  date: number;
+  membre?: string;
+  beneficiaire?: string;
+  montant_sats?: number;
+  payment_hash?: string;
+  preimage?: string;
+  amende_fcfa?: number;
+}
+
+interface NostrProof extends ProofPayload {
+  id: string;
+  hashCoherent: boolean | null;
+}
+
+interface RelayResult {
+  url: string;
+  events: NostrEvent[];
+  error?: string;
+}
+
+interface NostrView {
+  status: "idle" | "loading" | "inactive" | "ready" | "error";
+  proofs: NostrProof[];
+  relaysOk: number;
+  relaysTotal: number;
+  rejected: number;
+  publicKey?: string;
+  message?: string;
 }
 
 function readSession(): Session | null {
@@ -90,6 +146,7 @@ function readSession(): Session | null {
     if (
       typeof candidate.tontineId !== "string" ||
       typeof candidate.memberId !== "string" ||
+      typeof candidate.memberToken !== "string" ||
       typeof candidate.invitationCode !== "string"
     ) return null;
     return candidate as Session;
@@ -111,13 +168,14 @@ function errorDetail(value: unknown): string | null {
   return null;
 }
 
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function api<T>(path: string, init: RequestInit = {}, memberToken?: string): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
         ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(memberToken ? { "X-Jeton": memberToken } : {}),
         ...init.headers,
       },
     });
@@ -139,6 +197,196 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+function parseNostrEvent(value: unknown): NostrEvent | null {
+  if (typeof value !== "object" || value === null) return null;
+  const event = value as Partial<NostrEvent>;
+  if (
+    typeof event.id !== "string" ||
+    typeof event.pubkey !== "string" ||
+    typeof event.sig !== "string" ||
+    typeof event.content !== "string" ||
+    !Number.isSafeInteger(event.kind) ||
+    !Number.isSafeInteger(event.created_at) ||
+    !Array.isArray(event.tags) ||
+    !event.tags.every((tag) => Array.isArray(tag) && tag.every((part) => typeof part === "string"))
+  ) return null;
+  return event as NostrEvent;
+}
+
+function parseProofPayload(content: string, registryId: string): ProofPayload | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const data = value as Record<string, unknown>;
+  if (
+    data.v !== 1 ||
+    data.application !== "tontine-lightning" ||
+    data.tontine !== registryId ||
+    !isProofType(data.type) ||
+    typeof data.numero !== "number" ||
+    !Number.isSafeInteger(data.numero) ||
+    !(data.tour === null || (typeof data.tour === "number" && Number.isSafeInteger(data.tour))) ||
+    typeof data.date !== "number" ||
+    !Number.isSafeInteger(data.date)
+  ) return null;
+
+  const base = {
+    v: 1 as const,
+    application: "tontine-lightning" as const,
+    type: data.type,
+    tontine: data.tontine,
+    numero: data.numero,
+    tour: data.tour,
+    date: data.date,
+  };
+  const anonymizedId = /^[\da-f]{16}$/i;
+  if (data.type === "cotisation_payee") {
+    if (
+      typeof data.membre !== "string" ||
+      !anonymizedId.test(data.membre) ||
+      typeof data.montant_sats !== "number" ||
+      !Number.isSafeInteger(data.montant_sats) ||
+      data.montant_sats <= 0 ||
+      typeof data.payment_hash !== "string" ||
+      !/^[\da-f]{64}$/i.test(data.payment_hash) ||
+      typeof data.preimage !== "string" ||
+      !/^[\da-f]{64}$/i.test(data.preimage)
+    ) return null;
+    return {
+      ...base,
+      type: data.type,
+      membre: data.membre,
+      montant_sats: data.montant_sats,
+      payment_hash: data.payment_hash,
+      preimage: data.preimage,
+    };
+  }
+  if (data.type === "versement_fait") {
+    if (
+      typeof data.beneficiaire !== "string" ||
+      !anonymizedId.test(data.beneficiaire) ||
+      typeof data.montant_sats !== "number" ||
+      !Number.isSafeInteger(data.montant_sats) ||
+      data.montant_sats <= 0 ||
+      typeof data.payment_hash !== "string" ||
+      !/^[\da-f]{64}$/i.test(data.payment_hash) ||
+      typeof data.preimage !== "string" ||
+      !/^[\da-f]{64}$/i.test(data.preimage)
+    ) return null;
+    return {
+      ...base,
+      type: data.type,
+      beneficiaire: data.beneficiaire,
+      montant_sats: data.montant_sats,
+      payment_hash: data.payment_hash,
+      preimage: data.preimage,
+    };
+  }
+  if (
+    typeof data.membre !== "string" ||
+    !anonymizedId.test(data.membre) ||
+    typeof data.amende_fcfa !== "number" ||
+    !Number.isSafeInteger(data.amende_fcfa) ||
+    data.amende_fcfa < 0
+  ) return null;
+  return { ...base, type: data.type, membre: data.membre, amende_fcfa: data.amende_fcfa };
+}
+
+async function hashMatchesPreimage(preimage: string, expectedHash: string): Promise<boolean> {
+  if (!globalThis.crypto?.subtle) return false;
+  const bytes = new Uint8Array(preimage.match(/../g)!.map((part) => Number.parseInt(part, 16)));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const actualHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return actualHash === expectedHash.toLowerCase();
+}
+
+function queryNostrRelay(url: string, kind: number, tag: string): Promise<RelayResult> {
+  return new Promise((resolve) => {
+    const subscriptionId = `tontine-${Math.random().toString(36).slice(2)}`;
+    const events: NostrEvent[] = [];
+    let socket: WebSocket | null = null;
+    let finished = false;
+    const finish = (error?: string) => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timeout);
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(["CLOSE", subscriptionId]));
+        socket.close();
+      }
+      resolve({ url, events, ...(error ? { error } : {}) });
+    };
+    const timeout = window.setTimeout(() => finish("Délai de réponse dépassé"), 8000);
+    try {
+      socket = new WebSocket(url);
+      socket.onopen = () => {
+        if (finished) {
+          socket?.close();
+          return;
+        }
+        socket?.send(JSON.stringify([
+          "REQ",
+          subscriptionId,
+          { kinds: [kind], "#t": [tag], limit: 100 },
+        ]));
+      };
+      socket.onmessage = (message) => {
+        if (typeof message.data !== "string") return;
+        let response: unknown;
+        try {
+          response = JSON.parse(message.data);
+        } catch {
+          return;
+        }
+        if (!Array.isArray(response)) return;
+        if (response[0] === "EVENT" && response[1] === subscriptionId) {
+          const event = parseNostrEvent(response[2]);
+          if (event) events.push(event);
+        } else if (response[0] === "EOSE" && response[1] === subscriptionId) {
+          finish();
+        } else if (response[0] === "CLOSED" && response[1] === subscriptionId) {
+          finish(typeof response[2] === "string" ? response[2] : "Le relais a fermé la requête.");
+        }
+      };
+      socket.onerror = () => finish("Connexion au relais impossible");
+      socket.onclose = () => finish("Connexion fermée avant la fin de la recherche");
+    } catch {
+      finish("URL de relais ou connexion invalide");
+    }
+  });
+}
+
+async function verifyNostrProof(
+  event: NostrEvent,
+  expectedPublicKey: string,
+  registryId: string,
+  expectedKind: number,
+  tag: string,
+): Promise<NostrProof | null> {
+  let signatureValid = false;
+  try {
+    signatureValid =
+      event.kind === expectedKind &&
+      event.tags.some(([name, value]) => name === "t" && value === tag) &&
+      verifyEvent(event) &&
+      nip19.npubEncode(event.pubkey) === expectedPublicKey;
+  } catch {
+    signatureValid = false;
+  }
+  if (!signatureValid) return null;
+  const payload = parseProofPayload(event.content, registryId);
+  if (!payload) return null;
+  const isPayment = payload.type === "cotisation_payee" || payload.type === "versement_fait";
+  const hashCoherent = isPayment
+    ? await hashMatchesPreimage(payload.preimage!, payload.payment_hash!)
+    : null;
+  return { ...payload, id: event.id, hashCoherent };
+}
+
 function formatFcfa(amount: number): string {
   return new Intl.NumberFormat("fr-FR").format(amount);
 }
@@ -154,6 +402,13 @@ function App() {
   const [session, setSession] = useState<Session | null>(readSession);
   const [tontine, setTontine] = useState<Tontine | null>(null);
   const [invoice, setInvoice] = useState<Invoice | null>(null);
+  const [nostr, setNostr] = useState<NostrView>({
+    status: "idle",
+    proofs: [],
+    relaysOk: 0,
+    relaysTotal: 0,
+    rejected: 0,
+  });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
@@ -177,7 +432,11 @@ function App() {
     let active = true;
     const refresh = async () => {
       try {
-        const fresh = await api<Tontine>(`/tontines/${encodeURIComponent(session.tontineId)}`);
+        const fresh = await api<Tontine>(
+          `/tontines/${encodeURIComponent(session.tontineId)}`,
+          {},
+          session.memberToken,
+        );
         if (active) {
           setTontine(fresh);
         }
@@ -197,6 +456,7 @@ function App() {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
     setInvoice(null);
+    setNostr({ status: "idle", proofs: [], relaysOk: 0, relaysTotal: 0, rejected: 0 });
     setSuccess("");
     setError("");
     setPage("home");
@@ -222,6 +482,7 @@ function App() {
       persistSession({
         tontineId: result.tontine.id,
         memberId: result.tontine.organisateur_id,
+        memberToken: result.jeton_membre,
         organizerToken: result.jeton_organisateur,
         invitationCode: result.tontine.code_invitation,
       });
@@ -247,7 +508,12 @@ function App() {
           adresse_lightning: String(form.get("adresse_lightning") ?? "").trim(),
         }),
       });
-      persistSession({ tontineId: result.tontine_id, memberId: result.membre_id, invitationCode: code });
+      persistSession({
+        tontineId: result.tontine_id,
+        memberId: result.membre_id,
+        memberToken: result.jeton_membre,
+        invitationCode: code,
+      });
       setInviteCode(code);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Impossible de rejoindre cette tontine.");
@@ -283,12 +549,79 @@ function App() {
       const result = await api<Invoice>(
         `/tontines/${encodeURIComponent(session.tontineId)}/membres/${encodeURIComponent(currentMember.id)}/facture`,
         { method: "POST" },
+        session.memberToken,
       );
       setInvoice(result);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Impossible de créer la facture Lightning.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadNostrRegistry() {
+    if (!tontine) return;
+    setNostr({ status: "loading", proofs: [], relaysOk: 0, relaysTotal: 0, rejected: 0 });
+    try {
+      const info = await api<RegistryInfo>("/registre");
+      if (!info.actif) {
+        setNostr({
+          status: "inactive",
+          proofs: [],
+          relaysOk: 0,
+          relaysTotal: 0,
+          rejected: 0,
+          message: "Le registre Nostr n’est pas activé sur ce backend.",
+        });
+        return;
+      }
+      const publicKey = info.cle_publique;
+      const relays = info.relais;
+      const kind = info.kind;
+      const registryId = tontine.identifiant_registre;
+      if (!publicKey || !relays || !kind || !registryId) {
+        throw new Error("La configuration ou l’identifiant public du registre est incomplet.");
+      }
+
+      const groupTag = `tl-${registryId}`;
+      const results = await Promise.all(relays.map((relay) => queryNostrRelay(relay, kind, groupTag)));
+      const proofsById = new Map<string, NostrProof>();
+      let rejected = 0;
+      for (const result of results) {
+        for (const event of result.events) {
+          try {
+            const proof = await verifyNostrProof(event, publicKey, registryId, kind, groupTag);
+            if (proof) proofsById.set(proof.id, proof);
+            else rejected += 1;
+          } catch {
+            rejected += 1;
+          }
+        }
+      }
+      const proofs = [...proofsById.values()].sort(
+        (left, right) => left.numero - right.numero || left.date - right.date,
+      );
+      const relaysOk = results.filter((result) => !result.error).length;
+      setNostr({
+        status: "ready",
+        proofs,
+        relaysOk,
+        relaysTotal: results.length,
+        rejected,
+        publicKey,
+        message: relaysOk === 0
+          ? "Aucun relais n’a répondu. Vérifiez la connexion puis réessayez."
+          : undefined,
+      });
+    } catch (reason) {
+      setNostr({
+        status: "error",
+        proofs: [],
+        relaysOk: 0,
+        relaysTotal: 0,
+        rejected: 0,
+        message: reason instanceof Error ? reason.message : "Impossible de consulter le registre Nostr.",
+      });
     }
   }
 
@@ -300,15 +633,6 @@ function App() {
     } catch {
       setError("Copie impossible dans ce navigateur. Sélectionnez et copiez le lien affiché.");
     }
-  }
-
-  function leaveTontine() {
-    window.localStorage.removeItem(SESSION_KEY);
-    setSession(null);
-    setTontine(null);
-    setInvoice(null);
-    setSuccess("");
-    setError("");
   }
 
   const inviteUrl = `${window.location.origin}/rejoindre/${encodeURIComponent(session?.invitationCode ?? "")}`;
@@ -348,7 +672,7 @@ function App() {
           <div className="breadcrumb">Dakar Bitcoin Days <span>/</span> <strong>{page === "create" ? "Nouvelle tontine" : page === "join" ? "Rejoindre un groupe" : "Espace tontine"}</strong></div>
           <div className="topbar-right">
             <span className="secure-tag"><span>●</span> Paiement Lightning</span>
-            {session && <button className="avatar" title="Quitter cette tontine" onClick={leaveTontine}>{currentMember?.nom?.slice(0, 1).toUpperCase() ?? "M"}</button>}
+            {session && <button className="avatar" title="Retour à ma tontine" onClick={() => setPage("home")}>{currentMember?.nom?.slice(0, 1).toUpperCase() ?? "M"}</button>}
           </div>
         </header>
 
@@ -500,8 +824,60 @@ function App() {
                         </article>
                       )}
                       {tontine.statut === "terminee" && <article className="action-card"><div className="action-card-icon">✓</div><span className="summary-label">CYCLE TERMINÉ</span><h3>Bravo au groupe</h3><p>Tous les tours de la tontine sont terminés.</p></article>}
-                      {invoice && <article className="panel qr-panel"><div className="panel-heading"><div><h2>Votre facture</h2><p>Scannez ce QR code avec votre portefeuille Lightning.</p></div><button className="close-button" onClick={() => setInvoice(null)} aria-label="Fermer">×</button></div><div className="qr-wrap"><QRCodeSVG value={invoice.payment_request} size={188} level="M" includeMargin /></div><strong className="sats-amount">{formatFcfa(invoice.montant_sats)} <small>sats</small></strong><div className="invoice-copy"><code>{invoice.payment_request}</code><button onClick={() => { void navigator.clipboard.writeText(invoice.payment_request).then(() => setSuccess("Facture copiée.")).catch(() => setError("Copie impossible.")); }}>Copier</button></div><p className="qr-hint">Gardez cette page ouverte. Le statut se mettra à jour après confirmation du paiement.</p></article>}
+                      {invoice && <article className="panel qr-panel"><div className="panel-heading"><div><h2>Votre facture</h2><p>Scannez ce QR code avec votre portefeuille Lightning.</p></div><button className="close-button" onClick={() => setInvoice(null)} aria-label="Fermer">×</button></div><div className="qr-wrap"><QRCodeSVG value={invoice.payment_request} size={240} level="M" includeMargin fgColor="#111111" bgColor="#ffffff" title="QR code de la facture Lightning" /></div><strong className="sats-amount">{formatFcfa(invoice.montant_sats)} <small>sats</small></strong><div className="invoice-copy"><code>{invoice.payment_request}</code><button onClick={() => { void navigator.clipboard.writeText(invoice.payment_request).then(() => setSuccess("Facture copiée.")).catch(() => setError("Copie impossible.")); }}>Copier</button></div><p className="qr-hint">Gardez cette page ouverte. Le statut se mettra à jour après confirmation du paiement.</p></article>}
                       <div className="security-callout"><span>◎</span><p><strong>Un suivi partagé.</strong><br />Les paiements sont vérifiés par le service Lightning avant que le statut ne change.</p></div>
+                      <article className="panel nostr-panel">
+                        <div className="panel-heading">
+                          <div><h2>Registre public Nostr</h2><p>Consultez les événements publiés pour ce groupe.</p></div>
+                          <span className="nostr-mark">N</span>
+                        </div>
+                        <button
+                          className="button button-secondary button-wide"
+                          disabled={nostr.status === "loading"}
+                          onClick={() => void loadNostrRegistry()}
+                        >
+                          {nostr.status === "loading" ? "Recherche sur les relais…" : "Consulter les preuves"}
+                        </button>
+                        {nostr.status === "inactive" && <p className="nostr-message">{nostr.message}</p>}
+                        {nostr.status === "error" && <p className="nostr-message nostr-error">{nostr.message}</p>}
+                        {nostr.status === "ready" && (
+                          <>
+                            <p className="nostr-message">
+                              {nostr.proofs.length} événement(s) trouvés · {nostr.relaysOk}/{nostr.relaysTotal} relais répondent.
+                              {nostr.publicKey && <><br />Clé du service : <code>{nostr.publicKey.slice(0, 15)}…{nostr.publicKey.slice(-8)}</code></>}
+                            </p>
+                            {nostr.message && <p className="nostr-message nostr-error">{nostr.message}</p>}
+                            {nostr.rejected > 0 && <p className="nostr-warning">{nostr.rejected} événement(s) rejeté(s) : signature, format ou groupe non valide.</p>}
+                            <div className="proof-list">
+                              {nostr.proofs.map((proof) => (
+                                <div className="proof-row" key={proof.id}>
+                                  <span className={`proof-icon ${proof.hashCoherent === false ? "proof-invalid" : ""}`}>
+                                    {proof.hashCoherent === false ? "!" : "✓"}
+                                  </span>
+                                  <div className="proof-details">
+                                    <strong>
+                                      {proof.type === "cotisation_payee" ? "Cotisation" : proof.type === "versement_fait" ? "Versement" : "Retard"}
+                                      {proof.tour === null ? "" : ` · Tour ${proof.tour}`}
+                                    </strong>
+                                    <small>
+                                      {new Date(proof.date * 1000).toLocaleString("fr-FR")}
+                                      {proof.montant_sats !== undefined ? ` · ${formatFcfa(proof.montant_sats)} sats` : ` · Amende ${formatFcfa(proof.amende_fcfa ?? 0)} FCFA`}
+                                    </small>
+                                    <span className={proof.hashCoherent === false ? "proof-check failed" : "proof-check"}>
+                                      {proof.hashCoherent === null ? "Signature du service valide" : proof.hashCoherent ? "Signature et hash cohérents" : "Hash et préimage incohérents"}
+                                    </span>
+                                  </div>
+                                  <code className="proof-id">{proof.id.slice(0, 10)}…</code>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        <p className="nostr-disclaimer">
+                          La signature authentifie l’événement comme publié par le service. Le hash et la préimage sont comparés,
+                          mais une preuve Nostr ne démontre pas à elle seule qu’un paiement Lightning a été reçu. Les événements et préimages publiés sont publics.
+                        </p>
+                      </article>
                     </aside>
                   </div>
                 </>
