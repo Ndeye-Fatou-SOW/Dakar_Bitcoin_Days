@@ -59,7 +59,11 @@ def demarrer_registre():
     dossier = Path(__file__).resolve().parents[2] / "nostr"
     sys.path.insert(0, str(dossier))
     from registre_nostr import Publieur, charger
-    reglages = charger(Path(os.environ.get("NOSTR_ENV_FILE", dossier / ".env")))
+    fichier = Path(os.environ.get("NOSTR_ENV_FILE", dossier / ".env"))
+    if not fichier.is_file():
+        raise RuntimeError(f"NOSTR_MODE=actif mais {fichier} est introuvable : "
+                           "lance d'abord « python nostr/generer_secrets.py ».")
+    reglages = charger(fichier)
     publieur = Publieur(moteur, reglages, lambda valeur: empreinte_anonyme(valeur, reglages.sel),
                         os.environ.get("NOSTR_CURSEURS", "publications.db"),
                         publier_retards=os.environ.get("NOSTR_PUBLIER_RETARDS") == "oui")
