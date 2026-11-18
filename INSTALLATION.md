@@ -204,4 +204,3 @@ Les tests Python n'ont besoin ni de Docker ni d'Internet : Lightning et Nostr y 
 - Les paiements ont été testés sur un **réseau de test local**, pas avec de vrais sats.
 - Dans cette version, le service **garde la cagnotte** jusqu'au versement. Le paiement direct au bénéficiaire est la prochaine étape.
 - La valeur des sats peut **baisser** pendant que la cagnotte attend le dernier paiement. Les factures sont recalculées au cours du moment quand elles expirent.
-- Le relais `wss://nostr.oxtr.dev` refuse en ce moment les preuves (disque plein). Les autres relais suffisent : il en faut 2.
