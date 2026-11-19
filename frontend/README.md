@@ -46,40 +46,24 @@ Les jetons organisateur et membre restent dans le stockage local du navigateur. 
 | Tirer l’ordre de passage au sort | `POST /tontines/{id}/tirage` |
 | Démarrer | `POST /tontines/{id}/demarrer` |
 | Obtenir la facture à afficher en QR code | `POST /tontines/{id}/membres/{membre_id}/facture` |
-<<<<<<< HEAD
-=======
+| Retrouver sa tontine avec son code personnel | `POST /reconnexion` |
 | Exclure un membre en retard | `POST /tontines/{id}/membres/{membre_id}/exclure` |
 | Relancer un versement en échec | `POST /tontines/{id}/versement/relancer` |
 | Corriger son adresse Lightning | `PUT /tontines/{id}/membres/{membre_id}/adresse` |
 | Journal des événements | `GET /tontines/{id}/evenements?depuis=<numero>` |
 | Infos du registre Nostr | `GET /registre` |
->>>>>>> 7fb66d9245f00d3276775fc431efacd04ca7e509
+
+## Jetons et factures
+
+- `POST /tontines` renvoie un `jeton_organisateur`, gardé uniquement sur l’appareil de l’organisateur : il est demandé pour le tirage, l’ordre, le démarrage, l’exclusion et la relance.
+- `POST /tontines` et `POST /rejoindre/{code}` renvoient aussi un `jeton_membre`, propre à chaque membre.
+- La lecture d’une tontine, de son journal et des factures exige l’en-tête `X-Jeton` avec le `jeton_membre` ou le `jeton_organisateur`. Sans lui, l’API répond 403. Un membre ne peut demander que sa propre facture.
+- Les factures expirent au bout d’1 heure. Redemander la facture renvoie la même tant qu’elle est valable, puis une nouvelle au cours du moment : l’écran affiche toujours le dernier `payment_request` reçu.
 
 ## Limites du MVP
 
-<<<<<<< HEAD
-- L’actualisation utilise le polling; le WebSocket et les rappels automatiques restent à intégrer.
+- L’actualisation utilise le polling ; le WebSocket et les rappels automatiques restent à intégrer.
 - Le registre Nostr se consulte à la demande : le front interroge les relais configurés, vérifie les signatures du service et la cohérence SHA-256 des préimages publiées.
 - Une signature Nostr prouve l’origine du message, pas à elle seule qu’un paiement Lightning a eu lieu. Les événements et préimages relayés sont publics.
 - Le QR code est généré localement dans le navigateur à partir de la facture Lightning.
 - Le parcours de paiement doit être testé avec un backend et un nœud Lightning adaptés au réseau choisi pour la démo.
-=======
-- `POST /tontines` renvoie un `jeton_organisateur`. Garde-le uniquement sur l'appareil de l'organisateur : il est demandé pour le tirage, l'ordre, le démarrage, l'exclusion et la relance.
-- `POST /tontines` et `POST /rejoindre/{code}` renvoient aussi un `jeton_membre`, propre à chaque membre. Garde-le sur son appareil.
-- **Lecture réservée aux membres** : `GET /tontines/{id}`, `GET /tontines/{id}/evenements` et la demande de facture exigent l'en-tête `X-Jeton` avec le `jeton_membre` (ou le `jeton_organisateur`). Sans lui, l'API répond 403. Un membre ne peut demander que sa propre facture ; l'organisateur peut demander celle de n'importe quel membre.
-- Les factures expirent (1 heure prévue). Redemander la facture renvoie la même tant qu'elle est valable, puis une nouvelle au cours du moment : affiche toujours le dernier `payment_request` reçu.
-- Le QR code se fabrique à partir du champ `payment_request` de la facture.
-- `GET /tontines/{id}` renvoie un champ `situation` avec, pour chaque membre : `nom`, `statut`, `en_defaut` et `montant_du_fcfa`. C'est ce qu'il faut afficher dans la liste.
-
-## Temps réel
-
-Dans `backend/app/main.py`, `moteur.abonner(ta_fonction)` appelle ta fonction à chaque événement : c'est là que tu peux envoyer le message WebSocket. La fonction tourne dans un fil séparé, hors de la boucle `asyncio` de FastAPI.
-
-Types d'événements : `membre_inscrit`, `ordre_fixe`, `nouveau_tour`, `membre_en_defaut`, `cotisation_payee`, `membre_exclu`, `versement_fait`, `versement_echec`, `tontine_terminee`.
-
-Après une coupure, l'écran récupère ce qu'il a manqué avec `GET /tontines/{id}/evenements?depuis=<dernier numero reçu>`.
-
-## À décider avec Fatou
-
-La détection des retards et le calcul des amendes sont déjà dans le moteur. Il reste à se mettre d'accord sur le partage : par exemple, les rappels et l'affichage de ton côté.
->>>>>>> 7fb66d9245f00d3276775fc431efacd04ca7e509

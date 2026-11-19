@@ -510,7 +510,9 @@ function App() {
   async function handleJoin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const code = String(form.get("code") ?? inviteCode).trim();
+    // Accepte le code seul ou le lien d'invitation complet (…/rejoindre/<code>).
+    const brut = String(form.get("code") ?? inviteCode).trim();
+    const code = brut.match(/rejoindre\/([^/?#\s]+)/)?.[1] ?? brut;
     setLoading(true);
     setError("");
     try {

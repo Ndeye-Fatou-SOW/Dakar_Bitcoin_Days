@@ -194,7 +194,7 @@ Les tests Python n'ont besoin ni de Docker ni d'Internet : Lightning et Nostr y 
 | Réponse 403 de l'API | Ajouter l'en-tête `X-Jeton` avec un jeton de cette tontine |
 | Réponse 503 « Cours du bitcoin indisponible » | Vérifier la connexion Internet, puis réessayer |
 | `demo_tour.py` : « Backend injoignable » | Lancer d'abord `python scripts\regtest.py init` (option A) |
-| Après un redémarrage de Docker ou du PC : 503 « Service Lightning indisponible » | Depuis `lightning/` : `python scripts\regtest.py init`, puis `python scripts\regtest.py miner 1`. Si `init` s'arrête sur « canaux actifs », reconnecter les deux nœuds : `docker compose exec lnd-tontine lncli --network=regtest connect <clé du nœud membres>@lnd-membres:9735` (la clé est l'`identity_pubkey` de `docker compose exec lnd-membres lncli --network=regtest getinfo`) |
+| Après un redémarrage de Docker ou du PC : 503 « Service Lightning indisponible » | Depuis `lightning/` : `python scripts\regtest.py reparer`. Il recharge le portefeuille, resynchronise et reconnecte les nœuds, puis relance l'application |
 | Après un redémarrage de Docker : 503 « Cours du bitcoin indisponible » alors qu'Internet marche | `docker compose restart backend` dans `lightning/` |
 | Interface : « Le registre Nostr n'est pas activé » | Suivre l'option C |
 | Les données d'une ancienne démo gênent | `docker compose down -v` dans `lightning/`, puis relancer `init` |
