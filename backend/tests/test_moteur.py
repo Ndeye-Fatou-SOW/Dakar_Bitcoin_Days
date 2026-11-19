@@ -96,6 +96,27 @@ def test_regles_inscription():
         moteur.tirer_au_sort(t2.id, t2.organisateur_id)  # l'identifiant public ne suffit pas
 
 
+def test_retrouver_session_avec_jeton_membre_ou_organisateur():
+    moteur, _, t = preparer()
+    membre = t.membres[1]
+
+    tontine_membre, membre_retrouve, est_organisateur = moteur.retrouver_session(membre.jeton)
+    assert tontine_membre is t
+    assert membre_retrouve is membre
+    assert not est_organisateur
+
+    tontine_organisateur, organisateur_retrouve, est_organisateur = moteur.retrouver_session(
+        t.jeton_organisateur
+    )
+    assert tontine_organisateur is t
+    assert organisateur_retrouve.id == t.organisateur_id
+    assert est_organisateur
+
+    for jeton_invalide in ("jeton-invalide", "clé-invalide"):
+        with pytest.raises(ErreurTontine, match="Code d’accès invalide"):
+            moteur.retrouver_session(jeton_invalide)
+
+
 def test_retard_ajoute_amende_a_la_facture():
     maintenant = [1_000.0]
     moteur, ln, t = preparer(horloge=lambda: maintenant[0], delai_jours=1, amende_fcfa=500)
@@ -245,6 +266,32 @@ def test_api_evenements():
     journal = client.get(f"/tontines/{tid}/evenements", headers=entete).json()
     assert [e["type"] for e in journal] == ["membre_inscrit"]
     assert client.get(f"/tontines/{tid}/evenements", params={"depuis": 1}, headers=entete).json() == []
+
+
+def test_api_reconnexion_avec_code_personnel():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    creation = client.post("/tontines", json={"nom": "T", "montant_fcfa": 1000, "nombre_membres": 2,
+                                               "nom_organisateur": "Awa", "adresse_lightning": "a@w"}).json()
+    membre = client.post(creation["lien_invitation"], json={
+        "nom": "Ibou", "adresse_lightning": "i@w",
+    }).json()
+
+    reconnexion = client.post("/reconnexion", json={"jeton_acces": membre["jeton_membre"]})
+    assert reconnexion.status_code == 200
+    assert reconnexion.json()["tontine_id"] == creation["tontine"]["id"]
+    assert reconnexion.json()["membre_id"] == membre["membre_id"]
+    assert reconnexion.json()["jeton_membre"] == membre["jeton_membre"]
+    assert reconnexion.json()["jeton_organisateur"] is None
+
+    reconnexion_organisateur = client.post("/reconnexion", json={
+        "jeton_acces": creation["jeton_organisateur"],
+    })
+    assert reconnexion_organisateur.status_code == 200
+    assert reconnexion_organisateur.json()["jeton_organisateur"] == creation["jeton_organisateur"]
+    assert client.post("/reconnexion", json={"jeton_acces": "faux"}).status_code == 403
 
 
 def test_preimage_valide_mais_argent_non_recu_refusee():

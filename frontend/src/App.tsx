@@ -6,7 +6,7 @@ import { verifyEvent, type Event as NostrEvent } from "nostr-tools/pure";
 const API_BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const SESSION_KEY = "tontine-lightning-session";
 
-type Page = "home" | "create" | "join";
+type Page = "home" | "create" | "join" | "login";
 type TontineStatus = "inscription" | "en_cours" | "terminee";
 
 interface Member {
@@ -84,6 +84,14 @@ interface JoinResponse {
   tontine_id: string;
   membre_id: string;
   jeton_membre: string;
+}
+
+interface ReconnectResponse {
+  tontine_id: string;
+  membre_id: string;
+  jeton_membre: string;
+  jeton_organisateur: string | null;
+  code_invitation: string;
 }
 
 interface RegistryInfo {
@@ -391,6 +399,10 @@ function formatFcfa(amount: number): string {
   return new Intl.NumberFormat("fr-FR").format(amount);
 }
 
+function formatSats(amount: number): string {
+  return new Intl.NumberFormat("fr-FR").format(amount);
+}
+
 function dateLabel(timestamp: number): string {
   return new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" }).format(new Date(timestamp * 1000));
 }
@@ -422,6 +434,7 @@ function App() {
   const paidCount = tontine && currentTour
     ? tontine.membres.filter((member) => currentTour.cotisations[member.id]?.statut === "paye").length
     : 0;
+  const completedTours = tontine?.tours.filter((tour) => tour.versement_statut === "fait") ?? [];
   const isOrganizer = Boolean(session?.organizerToken);
 
   useEffect(() => {
@@ -520,6 +533,44 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleReconnect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api<ReconnectResponse>("/reconnexion", {
+        method: "POST",
+        body: JSON.stringify({ jeton_acces: String(form.get("jeton_acces") ?? "").trim() }),
+      });
+      persistSession({
+        tontineId: result.tontine_id,
+        memberId: result.membre_id,
+        memberToken: result.jeton_membre,
+        ...(result.jeton_organisateur ? { organizerToken: result.jeton_organisateur } : {}),
+        invitationCode: result.code_invitation,
+      });
+      setSuccess("Vous êtes reconnecté à votre tontine.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible de retrouver votre tontine.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function leaveSession() {
+    if (!window.confirm("Avez-vous enregistré votre code d’accès personnel ? Il sera nécessaire pour vous reconnecter sur cet appareil après la déconnexion.")) {
+      return;
+    }
+    window.localStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setTontine(null);
+    setInvoice(null);
+    setPage("home");
+    setError("");
+    setSuccess("");
   }
 
   async function runOrganizerAction(path: string, successMessage: string) {
@@ -635,6 +686,16 @@ function App() {
     }
   }
 
+  async function copyAccessCode() {
+    if (!session) return;
+    try {
+      await navigator.clipboard.writeText(session.memberToken);
+      setSuccess("Code d’accès copié. Gardez-le secret pour pouvoir vous reconnecter.");
+    } catch {
+      setError("Copie impossible dans ce navigateur. Sélectionnez et copiez le code affiché.");
+    }
+  }
+
   const inviteUrl = `${window.location.origin}/rejoindre/${encodeURIComponent(session?.invitationCode ?? "")}`;
 
   return (
@@ -655,6 +716,9 @@ function App() {
           <button className={`nav-item ${page === "join" ? "active" : ""}`} onClick={() => setPage("join")}>
             <span className="nav-icon">↗</span> Rejoindre un groupe
           </button>
+          <button className={`nav-item ${page === "login" ? "active" : ""}`} onClick={() => setPage("login")}>
+            <span className="nav-icon">↪</span> Me reconnecter
+          </button>
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note">
@@ -669,10 +733,11 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="mobile-brand"><span className="brand-mark">t.</span><strong>Tontine<span className="brand-light">.</span></strong></div>
-          <div className="breadcrumb">Dakar Bitcoin Days <span>/</span> <strong>{page === "create" ? "Nouvelle tontine" : page === "join" ? "Rejoindre un groupe" : "Espace tontine"}</strong></div>
+          <div className="breadcrumb">Dakar Bitcoin Days <span>/</span> <strong>{page === "create" ? "Nouvelle tontine" : page === "join" ? "Rejoindre un groupe" : page === "login" ? "Reconnexion" : "Espace tontine"}</strong></div>
           <div className="topbar-right">
             <span className="secure-tag"><span>●</span> Paiement Lightning</span>
             {session && <button className="avatar" title="Retour à ma tontine" onClick={() => setPage("home")}>{currentMember?.nom?.slice(0, 1).toUpperCase() ?? "M"}</button>}
+            {session && <button className="session-exit" onClick={leaveSession}>Quitter</button>}
           </div>
         </header>
 
@@ -724,6 +789,20 @@ function App() {
             </section>
           )}
 
+          {page === "login" && (
+            <section className="form-page">
+              <div className="eyebrow"><span className="eyebrow-dot" /> RETOUR AU GROUPE</div>
+              <h1>Se reconnecter à sa <em>tontine.</em></h1>
+              <p className="page-intro">Saisissez le code d’accès personnel enregistré lors de votre inscription. Il donne accès à votre tontine : ne le partagez avec personne.</p>
+              <form className="form-card join-card" onSubmit={handleReconnect}>
+                <div className="form-section-title"><span>01</span><div><strong>Votre code d’accès</strong><small>Il est différent du lien d’invitation</small></div></div>
+                <label>Code d’accès personnel<input name="jeton_acces" autoComplete="off" placeholder="Collez votre code personnel" required /></label>
+                <div className="form-footnote"><span>i</span> Votre session reste enregistrée sur cet appareil jusqu’à votre déconnexion.</div>
+                <button className="button button-primary button-wide" type="submit" disabled={loading}>{loading ? "Reconnexion…" : "Retrouver ma tontine"} <span>→</span></button>
+              </form>
+            </section>
+          )}
+
           {page === "home" && !session && (
             <section className="welcome">
               <div className="hero-copy">
@@ -733,6 +812,7 @@ function App() {
                 <div className="hero-actions">
                   <button className="button button-primary" onClick={() => setPage("create")}>Créer une tontine <span>→</span></button>
                   <button className="button button-secondary" onClick={() => setPage("join")}>J’ai un code d’invitation</button>
+                  <button className="button button-secondary" onClick={() => setPage("login")}>Je suis déjà membre</button>
                 </div>
                 <div className="hero-footnote"><span>✦</span> Propulsé par Bitcoin Lightning <i /> Pensé pour les tontines d’ici</div>
               </div>
@@ -761,6 +841,11 @@ function App() {
                     <div><div className="eyebrow"><span className="eyebrow-dot" /> VOTRE ESPACE</div><h1>{tontine.nom}<span className={`status-pill status-${tontine.statut}`}>{tontine.statut === "inscription" ? "Inscriptions" : tontine.statut === "en_cours" ? "En cours" : "Terminée"}</span></h1><p className="page-intro">Bonjour {currentMember?.nom ?? "membre"}, voici la situation de votre groupe.</p></div>
                     <button className="button button-secondary hide-mobile" onClick={() => void copyInvitation()}>＋ Inviter un membre</button>
                   </div>
+                  <details className="panel access-panel">
+                    <summary>Mon accès personnel <span>Enregistrez ce code pour pouvoir vous reconnecter</span></summary>
+                    <p>Ce code est secret et permet d’ouvrir votre tontine depuis un autre appareil. Il est sauvegardé automatiquement sur cet appareil.</p>
+                    <div className="access-code-row"><code>{session.memberToken}</code><button className="button button-secondary" onClick={() => void copyAccessCode()}>Copier mon code</button></div>
+                  </details>
                   <div className="summary-grid">
                     <article className="summary-card"><span className="summary-label">COTISATION / TOUR</span><strong>{formatFcfa(tontine.montant_fcfa)} <small>FCFA</small></strong><span className="summary-sub">{tontine.frequence}</span></article>
                     <article className="summary-card"><span className="summary-label">MEMBRES INSCRITS</span><strong>{tontine.membres.length}<small> / {tontine.nombre_membres}</small></strong><span className="summary-sub">{tontine.nombre_membres - tontine.membres.length > 0 ? `${tontine.nombre_membres - tontine.membres.length} place(s) restante(s)` : "Le groupe est au complet"}</span></article>
@@ -799,6 +884,63 @@ function App() {
                           <div className="steps-row"><div className="step-done"><span>✓</span><div><strong>Inviter le groupe</strong><small>{tontine.membres.length} / {tontine.nombre_membres} membres</small></div></div><div className={tontine.ordre.length ? "step-done" : "step-next"}><span>{tontine.ordre.length ? "✓" : "02"}</span><div><strong>Fixer l’ordre</strong><small>Tirage transparent ou choix manuel</small></div></div><div className="step-next"><span>03</span><div><strong>Lancer le premier tour</strong><small>Les membres pourront cotiser</small></div></div></div>
                         )}
                       </article>
+                      {completedTours.length > 0 && (
+                        <article className="panel completed-tours-panel">
+                          <div className="panel-heading">
+                            <div><h2>Tours terminés</h2><p>Les versements confirmés aux bénéficiaires.</p></div>
+                            <span className="member-count">{completedTours.length} versement(s)</span>
+                          </div>
+                          <div className="completed-tour-list">
+                            {completedTours.map((tour) => {
+                              const paidMember = tontine.membres.find((member) => member.id === tour.beneficiaire_id);
+                              const proof = nostr.proofs.find(
+                                (item) => item.type === "versement_fait" && item.tour === tour.numero,
+                              );
+                              const proofStatus = proof
+                                ? proof.hashCoherent
+                                  ? "Preuve Nostr vérifiée : signature et empreinte cohérentes."
+                                  : "Preuve Nostr trouvée, mais l’empreinte ne correspond pas."
+                                : nostr.status === "ready"
+                                  ? "Aucune preuve Nostr trouvée pour ce tour."
+                                  : nostr.status === "inactive"
+                                    ? "Le registre Nostr n’est pas activé."
+                                    : nostr.status === "error"
+                                      ? "Vérification Nostr indisponible."
+                                      : nostr.status === "loading"
+                                        ? "Recherche de la preuve Nostr…"
+                                        : "Preuve publique à vérifier dans le registre Nostr.";
+                              return (
+                                <div className="completed-tour" key={tour.numero}>
+                                  <div className="completed-tour-heading">
+                                    <span className="tour-number">TOUR {String(tour.numero).padStart(2, "0")}</span>
+                                    <span className="payout-confirmed"><i /> Versement confirmé</span>
+                                  </div>
+                                  <div className="completed-tour-summary">
+                                    <div><small>BÉNÉFICIAIRE</small><strong>{paidMember?.nom ?? "Membre inconnu"}</strong></div>
+                                    <div className="received-amount"><small>MONTANT REÇU</small><strong>{tour.versement_sats === null ? "—" : `${formatSats(tour.versement_sats)} sats`}</strong></div>
+                                  </div>
+                                  <div className={`payout-proof ${proof?.hashCoherent === false ? "payout-proof-invalid" : ""}`}>
+                                    <span className="proof-icon">{proof?.hashCoherent === false ? "!" : "✓"}</span>
+                                    <div><strong>Preuve du versement</strong><small>{proofStatus}</small>
+                                      {proof && <code className="payout-proof-id">Événement Nostr · {proof.id}</code>}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {nostr.status !== "inactive" && (
+                            <button
+                              className="button button-secondary button-wide completed-proof-button"
+                              disabled={nostr.status === "loading"}
+                              onClick={() => void loadNostrRegistry()}
+                            >
+                              {nostr.status === "loading" ? "Recherche de la preuve…" : nostr.status === "ready" ? "Actualiser les preuves Nostr" : "Vérifier les preuves Nostr"}
+                            </button>
+                          )}
+                          <p className="completed-proof-note">Le statut confirme le versement par Lightning. La preuve Nostr authentifie l’événement publié et vérifie la cohérence de son empreinte ; elle ne remplace pas la confirmation du paiement par Lightning.</p>
+                        </article>
+                      )}
                     </div>
                     <aside className="action-column">
                       {tontine.statut === "inscription" && (
@@ -861,7 +1003,7 @@ function App() {
                                     </strong>
                                     <small>
                                       {new Date(proof.date * 1000).toLocaleString("fr-FR")}
-                                      {proof.montant_sats !== undefined ? ` · ${formatFcfa(proof.montant_sats)} sats` : ` · Amende ${formatFcfa(proof.amende_fcfa ?? 0)} FCFA`}
+                                      {proof.montant_sats !== undefined ? ` · ${formatSats(proof.montant_sats)} sats` : ` · Amende ${formatFcfa(proof.amende_fcfa ?? 0)} FCFA`}
                                     </small>
                                     <span className={proof.hashCoherent === false ? "proof-check failed" : "proof-check"}>
                                       {proof.hashCoherent === null ? "Signature du service valide" : proof.hashCoherent ? "Signature et hash cohérents" : "Hash et préimage incohérents"}

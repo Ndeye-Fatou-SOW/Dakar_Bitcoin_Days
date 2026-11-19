@@ -49,6 +49,7 @@ a { color: inherit; text-decoration: none; }
 .secure-tag { color: #63716a; font-size: 10px; }
 .secure-tag span { margin-right: 5px; color: #6cad82; font-size: 8px; }
 .avatar { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 50%; color: #fff; background: #a87856; font-weight: 700; font-size: 11px; }
+.session-exit { padding: 6px 9px; border: 1px solid #e3e7e1; border-radius: 6px; background: #fff; color: #647168; font-size: 9px; }
 .mobile-brand { display: none; }
 .page-content { max-width: 1280px; min-width: 0; margin: auto; padding: 48px 5.2% 20px; min-height: calc(100vh - 72px); display: flex; flex-direction: column; }
 .eyebrow { display: flex; align-items: center; gap: 9px; color: #728078; font-size: 9px; font-weight: 700; letter-spacing: 1.55px; }
@@ -151,6 +152,13 @@ h1 em { color: var(--green); font-style: normal; }
 .summary-accent .summary-label { color: #69816c; }
 .summary-accent > strong { color: #2b6744; }
 .summary-accent .summary-sub { color: #6d8b73; }
+.access-panel { margin-bottom: 14px; }
+.access-panel summary { color: #39443d; font-size: 10px; font-weight: 700; cursor: pointer; }
+.access-panel summary span { margin-left: 8px; color: #89938b; font-size: 9px; font-weight: 400; }
+.access-panel p { margin: 11px 0; color: #7d8880; font-size: 9px; line-height: 1.6; }
+.access-code-row { display: flex; align-items: center; gap: 10px; }
+.access-code-row code { flex: 1; min-width: 0; padding: 10px; overflow-wrap: anywhere; border-radius: 6px; background: #f5f6f2; color: #45554a; font-size: 10px; }
+.access-code-row .button { min-height: 36px; white-space: nowrap; }
 .dashboard-columns { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(250px, .85fr); gap: 15px; align-items: start; min-width: 0; }
 .main-column, .action-column { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .panel { padding: 18px; border: 1px solid #e7e9e2; border-radius: 10px; background: #fff; }
@@ -174,6 +182,30 @@ h1 em { color: var(--green); font-style: normal; }
 .member-status.paid { color: #43835b; }.member-status.paid i { background: #68af7b; }
 .member-status.late { color: #b15b47; }
 .progress-panel { padding-bottom: 20px; }
+.completed-tours-panel { border-color: #dce8dd; background: linear-gradient(145deg, #fff 0%, #f7faf6 100%); }
+.completed-tours-panel > .panel-heading { margin-bottom: 15px; }
+.completed-tour-list { display: grid; gap: 10px; }
+.completed-tour { padding: 14px; border: 1px solid #e8eee6; border-radius: 9px; background: #fff; }
+.completed-tour-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 13px; }
+.payout-confirmed { display: inline-flex; align-items: center; gap: 6px; color: #43835b; font-size: 8px; font-weight: 700; }
+.payout-confirmed i { width: 6px; height: 6px; border-radius: 50%; background: #68af7b; }
+.completed-tour-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.completed-tour-summary > div { min-width: 0; }
+.completed-tour-summary small, .completed-tour-summary strong { display: block; }
+.completed-tour-summary small { margin-bottom: 5px; color: #929b94; font-size: 7px; font-weight: 700; letter-spacing: .7px; }
+.completed-tour-summary strong { overflow-wrap: anywhere; color: #334138; font-size: 11px; }
+.received-amount strong { color: #2f7250; font: 700 15px Manrope, sans-serif; }
+.payout-proof { display: flex; align-items: flex-start; gap: 8px; margin-top: 13px; padding-top: 11px; border-top: 1px solid #eff1ed; }
+.payout-proof .proof-icon { width: 19px; height: 19px; }
+.payout-proof > div { min-width: 0; }
+.payout-proof strong, .payout-proof small, .payout-proof-id { display: block; }
+.payout-proof strong { color: #4a594d; font-size: 8px; }
+.payout-proof small { margin-top: 4px; color: #758279; font-size: 8px; line-height: 1.5; }
+.payout-proof-id { margin-top: 5px; overflow-wrap: anywhere; color: #878f89; font-size: 7px; }
+.payout-proof-invalid .proof-icon { color: #a34334; background: #fae8e4; }
+.payout-proof-invalid small { color: #a34334; }
+.completed-proof-button { margin-top: 13px; min-height: 38px; font-size: 9px; }
+.completed-proof-note { margin: 11px 0 0; color: #8b958d; font-size: 8px; line-height: 1.55; }
 .tour-progress { padding: 11px 0 1px; }
 .progress-meta { display: flex; justify-content: space-between; margin-bottom: 9px; color: #737e76; font-size: 9px; }
 .progress-meta strong { color: #477a55; font-size: 9px; }
@@ -311,5 +343,7 @@ h1 em { color: var(--green); font-style: normal; }
   .steps-row small { font-size: 8px; }
   .deadline-line { flex-direction: column; gap: 6px; }
   .hide-mobile { display: none; }
+  .access-panel summary span { display: block; margin: 5px 0 0; }
+  .access-code-row { align-items: stretch; flex-direction: column; }
   .page-footer { flex-direction: column; padding-top: 24px; }
 }

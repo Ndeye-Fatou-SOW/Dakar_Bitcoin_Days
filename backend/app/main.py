@@ -90,6 +90,10 @@ class Inscription(BaseModel):
     adresse_lightning: str
 
 
+class Reconnexion(BaseModel):
+    jeton_acces: str
+
+
 class NouvelleAdresse(BaseModel):
     jeton_membre: str
     adresse_lightning: str
@@ -160,6 +164,18 @@ def evenements(tontine_id: str, depuis: int = Query(default=0, ge=0), x_jeton: s
 def rejoindre(code: str, d: Inscription):
     t, m = executer(lambda: moteur.rejoindre(code, d.nom, d.adresse_lightning))
     return {"tontine_id": t.id, "membre_id": m.id, "jeton_membre": m.jeton}
+
+
+@app.post("/reconnexion")
+def reconnecter(d: Reconnexion):
+    t, m, organisateur = executer(lambda: moteur.retrouver_session(d.jeton_acces))
+    return {
+        "tontine_id": t.id,
+        "membre_id": m.id,
+        "jeton_membre": m.jeton,
+        "jeton_organisateur": t.jeton_organisateur if organisateur else None,
+        "code_invitation": t.code_invitation,
+    }
 
 
 @app.put("/tontines/{tontine_id}/membres/{membre_id}/adresse")

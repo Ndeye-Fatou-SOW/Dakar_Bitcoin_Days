@@ -267,6 +267,19 @@ class Moteur:
             return t
         raise ErreurAcces("Acces reserve aux membres de la tontine")
 
+    def retrouver_session(self, jeton: str) -> tuple[Tontine, Membre, bool]:
+        """Retrouve une tontine avec un jeton personnel deja emis."""
+        with self._verrou:
+            if jeton:
+                jeton_octets = jeton.encode()
+                for t in self.tontines.values():
+                    if secrets.compare_digest(jeton_octets, t.jeton_organisateur.encode()):
+                        return t, t.membre(t.organisateur_id), True
+                    for membre in t.membres:
+                        if membre.jeton and secrets.compare_digest(jeton_octets, membre.jeton.encode()):
+                            return t, membre, False
+        raise ErreurAcces("Code d’accès invalide")
+
     def etat(self, tontine_id: str) -> Tontine:
         """Renvoie la tontine apres avoir pris en compte les retards."""
         with self._verrou:
