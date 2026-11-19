@@ -5,7 +5,7 @@ from pathlib import Path
 
 from nostr_sdk import Keys
 
-RELAIS = "wss://nos.lol,wss://relay.primal.net,wss://nostr.mom,wss://offchain.pub,wss://nostr.oxtr.dev"
+RELAIS = "wss://nos.lol,wss://relay.primal.net,wss://nostr.mom,wss://offchain.pub"
 CHEMIN = Path(__file__).parent / ".env"
 
 if CHEMIN.exists():
