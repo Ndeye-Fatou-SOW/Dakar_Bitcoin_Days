@@ -407,8 +407,22 @@ function dateLabel(timestamp: number): string {
   return new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" }).format(new Date(timestamp * 1000));
 }
 
+function extraireCodeInvitation(valeur: string): string {
+  const saisie = valeur.trim();
+  try {
+    const chemin = new URL(saisie, window.location.origin).pathname;
+    const correspondance = chemin.match(/^\/rejoindre\/([^/]+)\/?$/);
+    if (correspondance) return decodeURIComponent(correspondance[1]);
+  } catch {
+    // Garder la saisie telle quelle pour afficher une erreur utile côté API.
+  }
+  return saisie;
+}
+
 function App() {
-  const inviteFromUrl = window.location.pathname.match(/^\/rejoindre\/([^/]+)/)?.[1] ?? "";
+  const inviteFromUrl = window.location.pathname.match(/^\/rejoindre\/([^/]+)\/?$/)
+    ? extraireCodeInvitation(window.location.pathname)
+    : "";
   const [page, setPage] = useState<Page>(inviteFromUrl ? "join" : "home");
   const [inviteCode, setInviteCode] = useState(inviteFromUrl);
   const [session, setSession] = useState<Session | null>(readSession);
@@ -510,7 +524,7 @@ function App() {
   async function handleJoin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const code = String(form.get("code") ?? inviteCode).trim();
+    const code = extraireCodeInvitation(String(form.get("code") ?? inviteCode));
     setLoading(true);
     setError("");
     try {
@@ -780,7 +794,7 @@ function App() {
               <p className="page-intro">Inscrivez-vous avec le code partagé par l’organisateur. Vérifiez les règles du groupe avant de continuer.</p>
               <form className="form-card join-card" onSubmit={handleJoin}>
                 <div className="form-section-title"><span>01</span><div><strong>Vos informations</strong><small>Votre nom sera visible par les autres membres</small></div></div>
-                <label>Code d’invitation<input name="code" value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} placeholder="Collez votre code d’invitation" required /></label>
+                <label>Code ou lien d’invitation<input name="code" value={inviteCode} onChange={(event) => setInviteCode(extraireCodeInvitation(event.target.value))} placeholder="Collez le code ou le lien reçu" required /></label>
                 <label>Votre nom<input name="nom" placeholder="Ex. Aminata Diop" required /></label>
                 <label>Votre adresse Lightning<input name="adresse_lightning" placeholder="nom@wallet.com" required /></label>
                 <div className="form-footnote"><span>i</span> En rejoignant, vous acceptez le montant et les règles fixés par le groupe.</div>
